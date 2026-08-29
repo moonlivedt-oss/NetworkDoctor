@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QScrollArea, QSystemTrayIcon, QVBoxLayout, QWidget,
 )
 
-from .core import OK, WARN, BAD, is_admin, relaunch_as_admin, relaunch_self
+from .core import OK, WARN, BAD, is_admin, relaunch_as_admin
 from . import settings
 from .updates import check_update
 from .logs import (
@@ -40,10 +40,8 @@ from .net.tools import (
     list_dns_servers, list_connections, adapter_details, probe_optimal_mtu,
     apply_mtu, valid_host,
 )
-from .ui.theme import (
-    make_app_icon, hline, Spinner, STYLE, CLR_BUSY,
-    C_MUTED, C_FAINT, CLR_OK, CLR_WARN, CLR_BAD, _rgba,
-)
+from .ui import theme
+from .ui.theme import make_app_icon, hline, Spinner
 from .workers import (
     DiagnoseWorker, FixWorker, TaskWorker, SmartFixWorker, MonitorWorker,
 )
@@ -62,7 +60,7 @@ class NetworkDoctor(QMainWindow):
         self.setWindowTitle("NetworkDoctor — сетевой доктор")
         self.resize(660, 860)
         self.setMinimumSize(560, 720)
-        self.setStyleSheet(STYLE)
+        self.setStyleSheet(theme.STYLE)
         self._worker = None
         self._tworker = None
         self._smart = None
@@ -79,6 +77,10 @@ class NetworkDoctor(QMainWindow):
         self._force_quit = False       # настоящий выход (из трея)
         self._tray_hint_shown = False  # показали ли подсказку про трей
         self._start_hidden = start_hidden
+        self._health_kind = "idle"     # для перерисовки при смене темы
+        self._health_text = ""
+        self._results_mode = False     # показаны карточки (True) или заглушка
+        self._placeholder_text = None
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -86,16 +88,38 @@ class NetworkDoctor(QMainWindow):
         root.setContentsMargins(18, 18, 18, 18)
         root.setSpacing(12)
 
-        # Шапка: логотип + заголовок + автозапуск + мониторинг
+        # Шапка: логотип + заголовок/подзаголовок + панель оформления
         head = QHBoxLayout()
-        head.setSpacing(8)
+        head.setSpacing(11)
         logo = QLabel()
-        logo.setPixmap(make_app_icon().pixmap(QSize(34, 34)))
-        head.addWidget(logo, 0, Qt.AlignmentFlag.AlignVCenter)
+        logo.setPixmap(make_app_icon().pixmap(QSize(38, 38)))
+        head.addWidget(logo, 0, Qt.AlignmentFlag.AlignTop)
+
+        titlebox = QVBoxLayout()
+        titlebox.setSpacing(1)
         title = QLabel("NetworkDoctor")
         title.setObjectName("title")
-        head.addWidget(title, 0, Qt.AlignmentFlag.AlignVCenter)
-        head.addStretch()
+        titlebox.addWidget(title)
+        sub = QLabel("Чинит интернет, когда застрял прокси или намусорили "
+                     "VPN-туннели.")
+        sub.setObjectName("subtitle")
+        sub.setWordWrap(True)
+        titlebox.addWidget(sub)
+        head.addLayout(titlebox, 1)
+
+        head.addLayout(self._build_appearance(), 0)
+        root.addLayout(head)
+
+        # Полоса управления: автозапуск / мониторинг / авто-починка
+        strip = QFrame()
+        strip.setObjectName("strip")
+        srow = QHBoxLayout(strip)
+        srow.setContentsMargins(12, 8, 12, 8)
+        srow.setSpacing(8)
+        strip_lbl = QLabel("ФОН")
+        strip_lbl.setObjectName("section")
+        srow.addWidget(strip_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
+        srow.addStretch()
 
         self.btn_autostart = QPushButton("Автозапуск")
         self.btn_autostart.setObjectName("toggle")
@@ -105,7 +129,7 @@ class NetworkDoctor(QMainWindow):
                                       "всегда наготове.")
         self.btn_autostart.setChecked(is_autostart_enabled())
         self.btn_autostart.toggled.connect(self.on_toggle_autostart)
-        head.addWidget(self.btn_autostart, 0, Qt.AlignmentFlag.AlignVCenter)
+        srow.addWidget(self.btn_autostart)
 
         self.btn_monitor = QPushButton("Мониторинг: выкл")
         self.btn_monitor.setObjectName("toggle")
@@ -114,7 +138,7 @@ class NetworkDoctor(QMainWindow):
                                     "узлом; уведомляет при обрыве или смене "
                                     "страны выхода.")
         self.btn_monitor.toggled.connect(self.on_toggle_monitor)
-        head.addWidget(self.btn_monitor, 0, Qt.AlignmentFlag.AlignVCenter)
+        srow.addWidget(self.btn_monitor)
 
         self._autofix_enabled = bool(settings.get("autofix"))
         self.btn_autofix = QPushButton(
@@ -128,14 +152,8 @@ class NetworkDoctor(QMainWindow):
             "может отключить активный прокси-клиент. Включай, если прокси не "
             "используешь.")
         self.btn_autofix.toggled.connect(self.on_toggle_autofix)
-        head.addWidget(self.btn_autofix, 0, Qt.AlignmentFlag.AlignVCenter)
-        root.addLayout(head)
-
-        sub = QLabel("Чинит интернет, когда застрял прокси или намусорили "
-                     "VPN-туннели.")
-        sub.setObjectName("subtitle")
-        sub.setWordWrap(True)
-        root.addWidget(sub)
+        srow.addWidget(self.btn_autofix)
+        root.addWidget(strip)
 
         # Статус прав администратора
         if is_admin():
@@ -357,6 +375,71 @@ class NetworkDoctor(QMainWindow):
         self.log.setPlaceholderText("Здесь появится журнал действий…")
         root.addWidget(self.log)
 
+        theme.subscribe(self.restyle)  # перерисовать окно при смене темы
+
+    # -- оформление (тема/акцент на лету) ----------------------------------
+    def _build_appearance(self) -> QHBoxLayout:
+        """Панель в шапке: переключатель тёмной/светлой темы + акцентные цвета.
+        Всё применяется на лету (без перезапуска) через theme.set_appearance."""
+        box = QHBoxLayout()
+        box.setSpacing(6)
+        self.btn_theme = QPushButton()
+        self.btn_theme.setObjectName("appBtn")
+        self.btn_theme.setToolTip("Переключить тёмную/светлую тему")
+        self.btn_theme.clicked.connect(self._toggle_theme)
+        box.addWidget(self.btn_theme, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self._swatches = {}
+        for name in ("violet", "blue", "teal", "rose"):
+            b = QPushButton()
+            b.setFixedSize(20, 20)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setToolTip("Акцент: " + theme.ACCENT_LABELS.get(name, name).lower())
+            b.clicked.connect(lambda _, n=name: self._set_accent(n))
+            self._swatches[name] = b
+            box.addWidget(b, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._refresh_appearance()
+        return box
+
+    def _refresh_appearance(self) -> None:
+        """Обновить вид кнопок оформления под активную тему/акцент."""
+        self.btn_theme.setText("☀" if theme.THEME_NAME == "light" else "☾")
+        mode = "light" if theme.THEME_NAME == "light" else "dark"
+        for name, b in self._swatches.items():
+            col = theme.ACCENTS[name][mode]["primary1"]
+            sel = name == theme.ACCENT_NAME
+            border = theme.C_TITLE if sel else "transparent"
+            b.setStyleSheet(
+                f"QPushButton{{background:{col}; border-radius:10px; "
+                f"border:2px solid {border};}}"
+                f"QPushButton:hover{{border:2px solid {theme.C_MUTED};}}")
+
+    def _toggle_theme(self) -> None:
+        new = "dark" if theme.THEME_NAME == "light" else "light"
+        if theme.set_appearance(name=new):
+            self.log_line("▶ Тема: " +
+                          ("светлая" if new == "light" else "тёмная") + ".")
+
+    def _set_accent(self, name: str) -> None:
+        if theme.set_appearance(accent=name):
+            self.log_line("▶ Акцент: " +
+                          theme.ACCENT_LABELS.get(name, name).lower() + ".")
+
+    def restyle(self) -> None:
+        """Переприменить оформление на лету после смены темы/акцента."""
+        self.setStyleSheet(theme.STYLE)
+        self._refresh_appearance()
+        self.health_spin.set_color(theme.CLR_BUSY)
+        self.set_health(self._health_kind, self._health_text)
+        if self._results_mode and self._last_items:
+            self._show_results(self._last_items)
+        else:
+            self._placeholder(self._placeholder_text or "")
+        icon = make_app_icon()
+        self.setWindowIcon(icon)
+        if self._tray is not None:
+            self._tray.setIcon(icon)
+
     # -- фоновые потоки ----------------------------------------------------
     def _track(self, thread):
         """Удержать ссылку на QThread до его завершения и вернуть его же.
@@ -413,21 +496,6 @@ class NetworkDoctor(QMainWindow):
         dlg = SettingsDialog(self)
         if dlg.exec() and dlg.result_value:
             self.log_line("✔ Настройки сохранены.")
-            if dlg.result_value.get("theme_changed"):
-                ans = QMessageBox.question(
-                    self, "Смена темы",
-                    "Тема изменена. Перезапустить NetworkDoctor сейчас, "
-                    "чтобы применить?",
-                    QMessageBox.StandardButton.Yes
-                    | QMessageBox.StandardButton.No)
-                if ans == QMessageBox.StandardButton.Yes:
-                    try:
-                        relaunch_self()
-                    except Exception as e:
-                        self.log_line(f"  ✗ Не удалось перезапустить: {e}")
-                        return
-                    self._force_quit = True
-                    self.close()
 
     def on_check_update(self) -> None:
         self.log_line("▶ Проверяю обновления…")
@@ -482,9 +550,11 @@ class NetworkDoctor(QMainWindow):
                 w.deleteLater()
 
     def _placeholder(self, text: str) -> None:
+        self._results_mode = False
+        self._placeholder_text = text
         self._clear_results()
         lbl = QLabel(text)
-        lbl.setStyleSheet(f"color:{C_FAINT}; padding:20px;")
+        lbl.setStyleSheet(f"color:{theme.C_FAINT}; padding:20px;")
         lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.results_lay.addWidget(lbl)
         self.results_lay.addStretch()
@@ -505,6 +575,7 @@ class NetworkDoctor(QMainWindow):
         QTimer.singleShot(delay, anim.start)
 
     def _show_results(self, items: list[dict]) -> None:
+        self._results_mode = True
         self._clear_results()
         for i, it in enumerate(items):
             self._add_card(it, i * 55)
@@ -514,6 +585,7 @@ class NetworkDoctor(QMainWindow):
         """Дописать карточки в конец (не перерисовывая уже показанные)."""
         if not items:
             return
+        self._results_mode = True
         # снять хвостовой stretch, добавить карточки, вернуть stretch
         last = self.results_lay.takeAt(self.results_lay.count() - 1)
         if last is not None and last.widget() is not None:
@@ -526,12 +598,14 @@ class NetworkDoctor(QMainWindow):
     # -- сводный индикатор состояния ---------------------------------------
     def set_health(self, kind: str, text: str) -> None:
         """kind: 'ok' | 'warn' | 'bad' | 'busy' | 'idle'."""
-        colors = {OK: CLR_OK, WARN: CLR_WARN, BAD: CLR_BAD,
-                  "busy": CLR_BUSY, "idle": C_MUTED}
-        c = colors.get(kind, C_MUTED)
+        self._health_kind = kind
+        self._health_text = text
+        colors = {OK: theme.CLR_OK, WARN: theme.CLR_WARN, BAD: theme.CLR_BAD,
+                  "busy": theme.CLR_BUSY, "idle": theme.C_MUTED}
+        c = colors.get(kind, theme.C_MUTED)
         self.health_frame.setStyleSheet(
-            f"QFrame#health{{background:{_rgba(c, 0.10)}; "
-            f"border:1px solid {_rgba(c, 0.33)}; border-radius:12px;}}")
+            f"QFrame#health{{background:{theme._rgba(c, 0.10)}; "
+            f"border:1px solid {theme._rgba(c, 0.33)}; border-radius:12px;}}")
         self.health_label.setStyleSheet(
             f"color:{c}; font-size:15px; font-weight:600;")
         self.health_label.setText(text)

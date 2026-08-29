@@ -17,6 +17,7 @@ CONFIG_FILE: Path = LOG_DIR / "config.json"
 
 DEFAULTS = {
     "theme": "dark",           # 'dark' | 'light'
+    "accent": "violet",        # 'violet' | 'blue' | 'teal' | 'rose'
     "language": "ru",          # 'ru' | 'en'
     "autofix": False,          # авто-починка при обрыве
     "ping_host": "1.1.1.1",    # хост по умолчанию для «Пинг хоста»
