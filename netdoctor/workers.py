@@ -8,12 +8,14 @@ import time
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from .core import is_admin
-from .diagnostics import run_core_diagnosis, run_remnant_diagnosis, quick_online
-from .fixes import (
+from .net.diagnostics import (
+    run_core_diagnosis, run_remnant_diagnosis, quick_online,
+)
+from .net.fixes import (
     fix_wininet_proxy, fix_winhttp_proxy, fix_env_proxy, fix_flush_dns,
     fix_ip_renew, fix_restart_dnscache, fix_stale_routes, fix_disable_wpad,
 )
-from .net_tools import get_exit_info
+from .net.tools import get_exit_info
 
 
 class DiagnoseWorker(QThread):

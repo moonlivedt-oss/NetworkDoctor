@@ -27,6 +27,27 @@ DEFAULTS = {
 _data: dict = dict(DEFAULTS)
 
 
+def _coerce(key: str, value):
+    """Привести значение к типу значения по умолчанию.
+
+    Битый или подменённый config.json не должен ронять программу (например
+    monitor_interval='abc' → int('abc') упал бы при включении мониторинга) и не
+    должен подсовывать неожиданный тип. Несовместимое значение заменяем на
+    дефолт. bool проверяем до int — bool является подтипом int в Python.
+    """
+    default = DEFAULTS[key]
+    if isinstance(default, bool):
+        return value if isinstance(value, bool) else default
+    if isinstance(default, int):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+    if isinstance(default, str):
+        return value if isinstance(value, str) else default
+    return value
+
+
 def load() -> dict:
     """Загрузить настройки с диска (с дополнением значений по умолчанию)."""
     global _data
@@ -34,7 +55,8 @@ def load() -> dict:
         raw = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
         if isinstance(raw, dict):
             merged = dict(DEFAULTS)
-            merged.update({k: v for k, v in raw.items() if k in DEFAULTS})
+            merged.update({k: _coerce(k, v) for k, v in raw.items()
+                           if k in DEFAULTS})
             _data = merged
     except Exception:
         _data = dict(DEFAULTS)

@@ -9,9 +9,9 @@ import datetime
 import os
 import winreg
 
-from .core import INET_SETTINGS, ENV_KEY, PROXY_ENV_NAMES, run_cmd, ps_quote
-from .logs import LOG_DIR
-from .net_tools import default_adapter, list_stale_routes
+from ..core import INET_SETTINGS, ENV_KEY, PROXY_ENV_NAMES, run_cmd, ps_quote
+from ..logs import LOG_DIR
+from .tools import default_adapter, list_stale_routes
 from .hosts import _hosts_path, _hosts_entry_suspicious
 
 

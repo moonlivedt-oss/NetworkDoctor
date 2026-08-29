@@ -13,8 +13,8 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import QFrame, QWidget
 
-from .core import OK, WARN, BAD, INFO
-from . import settings
+from ..core import OK, WARN, BAD, INFO
+from .. import settings
 
 
 def _rgba(hex_color: str, alpha: float) -> str:

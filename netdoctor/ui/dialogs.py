@@ -9,10 +9,10 @@ from PyQt6.QtWidgets import (
     QPushButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget,
 )
 
-from .core import OK, WARN, BAD
-from .logs import STATE_FILE, read_state_history
-from .net_tools import country_name, kill_process, PUBLIC_DNS, valid_host
-from . import settings
+from ..core import OK, WARN, BAD
+from ..logs import STATE_FILE, read_state_history
+from ..net.tools import country_name, kill_process, PUBLIC_DNS, valid_host
+from .. import settings
 from .theme import (
     C_TEXT, C_MUTED, C_FAINT, C_TITLE, CLR_OK, CLR_WARN, CLR_BAD, CLR_INFO,
     STYLE, ICONS, _rgba,
@@ -120,8 +120,9 @@ class ProxyProcessDialog(QDialog):
         if ok:
             btn.setText("Завершён ✓")
             btn.setEnabled(False)
-            card.setStyleSheet("QFrame#card{background:#1d2a25;"
-                               "border:1px solid #35493f;border-radius:12px;}")
+            card.setStyleSheet(
+                f"QFrame#card{{background:{_rgba(CLR_OK, 0.12)};"
+                f"border:1px solid {_rgba(CLR_OK, 0.40)};border-radius:12px;}}")
         else:
             QMessageBox.warning(self, "Не удалось",
                                 f"Не удалось завершить: {msg or 'нужен админ?'}")

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import os
 import subprocess
 import sys
 
@@ -36,6 +37,36 @@ PROXY_PROC_HINTS = ("nekoray", "nekobox", "v2ray", "xray", "sing-box",
 OK, WARN, BAD, INFO = "ok", "warn", "bad", "info"
 
 logger = logging.getLogger("NetworkDoctor")
+
+# --- Абсолютные пути к системным утилитам ----------------------------------
+# Запуск по «голому» имени («netsh», «powershell») небезопасен: Windows ищет
+# исполняемый файл в т.ч. в текущей папке и папке приложения РАНЬШЕ System32.
+# Если рядом подложить netsh.exe/powershell.exe — выполнится подделка, а мы
+# нередко работаем с правами администратора (binary planting). Поэтому все
+# системные утилиты резолвим в абсолютный путь внутри System32.
+_SYS32 = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32")
+_SYSTEM_EXES = {
+    "powershell": os.path.join(_SYS32, "WindowsPowerShell", "v1.0",
+                               "powershell.exe"),
+    "netsh": os.path.join(_SYS32, "netsh.exe"),
+    "ipconfig": os.path.join(_SYS32, "ipconfig.exe"),
+    "ping": os.path.join(_SYS32, "ping.exe"),
+    "tasklist": os.path.join(_SYS32, "tasklist.exe"),
+    "netstat": os.path.join(_SYS32, "netstat.exe"),
+    "taskkill": os.path.join(_SYS32, "taskkill.exe"),
+    "arp": os.path.join(_SYS32, "arp.exe"),
+    "route": os.path.join(_SYS32, "route.exe"),
+}
+
+
+def _resolve_exe(name: str) -> str:
+    """Абсолютный путь к системной утилите в System32, если он существует.
+
+    Иначе возвращаем имя как есть (нестандартная система) — чтобы не сломать
+    запуск там, где раскладка папок отличается.
+    """
+    path = _SYSTEM_EXES.get(name.lower())
+    return path if path and os.path.exists(path) else name
 
 
 def is_admin() -> bool:
@@ -80,6 +111,8 @@ def run_cmd(args: list[str], timeout: int = 30) -> tuple[int, str]:
     и упадёт, поэтому такой вывод корректно уходит в 'oem'. Итог: не рассыпается
     ни UTF-8, ни консольная кириллица.
     """
+    if args:
+        args = [_resolve_exe(args[0]), *args[1:]]
     try:
         proc = subprocess.run(
             args,

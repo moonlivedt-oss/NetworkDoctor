@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import re
 import urllib.request
 
 from . import __version__
@@ -16,6 +17,15 @@ from . import __version__
 # Репозиторий по умолчанию (fallback). Обычно задаётся не тут, а в настройках
 # (config.json → "github_repo") — тогда не нужно править код. Формат: 'owner/name'.
 GITHUB_REPO = ""
+
+# Допустимый формат репозитория: 'владелец/название' из безопасных символов.
+# Не пускаем сюда слэши/точки-переходы/пробелы, чтобы подменённый config.json не
+# мог увести запрос на чужой адрес (../, лишние сегменты пути и т.п.).
+_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$")
+
+# Максимальный размер ответа GitHub, который читаем (защита от «бесконечного»
+# тела). Реальный JSON релиза — десятки КБ.
+_MAX_RESPONSE = 1_000_000
 
 
 def _repo() -> str:
@@ -48,13 +58,17 @@ def check_update(timeout: int = 8) -> dict:
     if not repo:
         return {"status": "unconfigured", "current": current, "latest": "",
                 "url": "", "note": "Репозиторий не настроен (github_repo)."}
+    if not _REPO_RE.match(repo):
+        return {"status": "error", "current": current, "latest": "", "url": "",
+                "note": "Некорректный формат репозитория — нужно "
+                        "«владелец/название»."}
     url = f"https://api.github.com/repos/{repo}/releases/latest"
     try:
         req = urllib.request.Request(
             url, headers={"User-Agent": "NetworkDoctor",
                           "Accept": "application/vnd.github+json"})
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            data = json.loads(r.read().decode("utf-8", "replace"))
+            data = json.loads(r.read(_MAX_RESPONSE).decode("utf-8", "replace"))
         tag = str(data.get("tag_name") or data.get("name") or "")
         html = str(data.get("html_url") or "")
         if not tag:

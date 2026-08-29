@@ -26,28 +26,28 @@ from .logs import (
     setup_logging, install_excepthook, record_state, build_report,
     LOG_DIR, logger,
 )
-from .fixes import (
+from .net.fixes import (
     fix_wininet_proxy, fix_winhttp_proxy, fix_env_proxy, fix_flush_dns,
     fix_ip_renew, fix_winsock, fix_tcpip,
     fix_firewall_reset, fix_stale_routes, fix_mtu_reset, fix_restart_dnscache,
     create_restore_point, fix_firewall_backup, backup_network_state,
     fix_flush_arp, fix_clean_hosts, fix_disable_wpad,
 )
-from .net_tools import (
+from .net.tools import (
     list_proxy_processes, list_adapters, default_adapter, restart_adapter,
     set_dns, get_exit_info, ping_stats, country_name,
     download_speed, ipv6_enabled, set_ipv6,
     list_dns_servers, list_connections, adapter_details, probe_optimal_mtu,
     apply_mtu, valid_host,
 )
-from .theme import (
+from .ui.theme import (
     make_app_icon, hline, Spinner, STYLE, CLR_BUSY,
     C_MUTED, C_FAINT, CLR_OK, CLR_WARN, CLR_BAD, _rgba,
 )
 from .workers import (
     DiagnoseWorker, FixWorker, TaskWorker, SmartFixWorker, MonitorWorker,
 )
-from .dialogs import (
+from .ui.dialogs import (
     ResultCard, ProxyProcessDialog, DnsDialog, HistoryDialog,
     AdapterDetailsDialog, DnsInfoDialog, ConnectionsDialog, SettingsDialog,
 )
@@ -847,9 +847,12 @@ class NetworkDoctor(QMainWindow):
         if not self._need_admin():
             return
         self.log_line("▶ Проверяю состояние IPv6…")
-        self._run_task(
-            lambda: (lambda a: (a, ipv6_enabled(a)))(default_adapter()),
-            self._ipv6_state)
+
+        def work():
+            adapter = default_adapter()
+            return adapter, ipv6_enabled(adapter)
+
+        self._run_task(work, self._ipv6_state)
 
     def _ipv6_state(self, res) -> None:
         if isinstance(res, Exception):

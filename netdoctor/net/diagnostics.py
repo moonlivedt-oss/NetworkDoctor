@@ -11,11 +11,11 @@ import urllib.request
 import winreg
 from concurrent.futures import ThreadPoolExecutor
 
-from .core import (
+from ..core import (
     OK, WARN, BAD, INFO,
     INET_SETTINGS, ENV_KEY, PROXY_ENV_NAMES, VPN_ADAPTER_HINTS,
 )
-from .net_tools import collect_fast_state, collect_remnant_state
+from .tools import collect_fast_state, collect_remnant_state
 from .hosts import read_hosts_entries
 
 _WININET_TITLE = "Системный прокси Windows"

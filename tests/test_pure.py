@@ -6,9 +6,9 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from netdoctor import net_tools as nt
+from netdoctor.net import tools as nt
 from netdoctor import updates
-from netdoctor import diagnostics as diag
+from netdoctor.net import diagnostics as diag
 from netdoctor.core import OK, WARN, BAD
 
 
@@ -24,6 +24,11 @@ def test_valid_host_rejects_injection():
     assert not nt.valid_host("$(whoami)")
     assert not nt.valid_host("")
     assert not nt.valid_host("-flag")
+
+
+def test_valid_host_length_limit():
+    assert nt.valid_host("a" * 253)       # предельная длина DNS-имени
+    assert not nt.valid_host("a" * 254)   # длиннее — отвергаем
 
 
 # --- парсинг зависших маршрутов ------------------------------------------
@@ -102,6 +107,21 @@ def test_check_update_unconfigured():
         settings._data["github_repo"] = old_cfg
 
 
+def test_check_update_rejects_bad_repo():
+    from netdoctor import settings
+    old, old_cfg = updates.GITHUB_REPO, settings.get("github_repo")
+    updates.GITHUB_REPO = ""
+    try:
+        for bad in ("owner/name/extra", "has space/name", "onlyowner"):
+            settings._data["github_repo"] = bad
+            res = updates.check_update()
+            assert res["status"] == "error", bad
+            assert "формат" in res["note"].lower()
+    finally:
+        updates.GITHUB_REPO = old
+        settings._data["github_repo"] = old_cfg
+
+
 def test_updates_repo_prefers_settings():
     from netdoctor import settings
     old, old_cfg = updates.GITHUB_REPO, settings.get("github_repo")
@@ -121,6 +141,29 @@ def test_ps_quote():
     from netdoctor.core import ps_quote
     assert ps_quote("Ethernet") == "'Ethernet'"
     assert ps_quote("O'Brien Wi-Fi") == "'O''Brien Wi-Fi'"
+
+
+# --- резолв системных утилит в абсолютный путь ----------------------------
+def test_resolve_exe_absolute():
+    from netdoctor import core
+    r = core._resolve_exe("netsh")
+    assert os.path.isabs(r) and r.lower().endswith("netsh.exe")
+    # неизвестное имя возвращаем как есть (fallback для нестандартных систем)
+    assert core._resolve_exe("no-such-exe-xyz") == "no-such-exe-xyz"
+
+
+# --- типизация значений настроек ------------------------------------------
+def test_settings_coerce_types():
+    from netdoctor import settings
+    assert settings._coerce("monitor_interval", "30") == 30       # str→int
+    assert settings._coerce("monitor_interval", "abc") == \
+        settings.DEFAULTS["monitor_interval"]                     # мусор→дефолт
+    assert settings._coerce("autofix", "yes") == \
+        settings.DEFAULTS["autofix"]                             # не bool→дефолт
+    assert settings._coerce("autofix", True) is True
+    assert settings._coerce("ping_host", 123) == \
+        settings.DEFAULTS["ping_host"]                            # не str→дефолт
+    assert settings._coerce("ping_host", "8.8.8.8") == "8.8.8.8"
 
 
 # --- классификация DNS-утечки (через вердикт диалога невозможно без Qt) ----

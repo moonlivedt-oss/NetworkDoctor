@@ -7,7 +7,7 @@ import re
 import time
 import urllib.request
 
-from .core import (
+from ..core import (
     PROXY_PORTS, PROXY_PROC_HINTS, VPN_ADAPTER_HINTS, run_cmd, ps_quote,
 )
 # hosts-логика вынесена в отдельный модуль; ре-экспортируем для обратной
@@ -163,9 +163,16 @@ def country_name(code: str) -> str:
 
 
 def valid_host(target: str) -> bool:
-    """Разрешаем только имена хостов и IP — защита от подстановки в команду."""
+    """Разрешаем только имена хостов и IP — защита от подстановки в команду.
+
+    Плюс ограничение длины (max 253 — предельная длина DNS-имени): и чтобы не
+    городить нелепо длинную строку в команду, и как защита от разрастания ввода.
+    """
+    target = target or ""
+    if len(target) > 253:
+        return False
     return bool(re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9.\-:]*[A-Za-z0-9])?",
-                             target or ""))
+                             target))
 
 
 def get_exit_info(timeout: int = 6) -> tuple[str, str]:
@@ -175,7 +182,8 @@ def get_exit_info(timeout: int = 6) -> tuple[str, str]:
         req = urllib.request.Request("https://cloudflare.com/cdn-cgi/trace",
                                      headers={"User-Agent": "NetworkDoctor"})
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            body = r.read().decode("utf-8", "replace")
+            # trace-ответ — сотни байт; читаем с запасом, но с лимитом
+            body = r.read(65536).decode("utf-8", "replace")
         m_ip = re.search(r"ip=([\d.:a-fA-F]+)", body)
         m_loc = re.search(r"loc=([A-Za-z]{2})", body)
         ip = m_ip.group(1) if m_ip else ""
@@ -188,7 +196,7 @@ def get_exit_info(timeout: int = 6) -> tuple[str, str]:
         req = urllib.request.Request("https://api.ipify.org",
                                      headers={"User-Agent": "NetworkDoctor"})
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            return r.read().decode("utf-8", "replace").strip(), ""
+            return r.read(256).decode("utf-8", "replace").strip(), ""
     except Exception:
         return "", ""
 
@@ -200,6 +208,9 @@ def download_speed(bytes_count: int = 10_000_000, timeout: int = 20) -> float:
     браузер) — показывает реальную скорость канала.
     """
     url = f"https://speed.cloudflare.com/__down?bytes={bytes_count}"
+    # предел на всякий случай: не читаем больше, чем запросили, с запасом ×4 —
+    # чтобы подставной сервер/прокси не гнал поток бесконечно
+    cap = max(bytes_count, 1) * 4
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "NetworkDoctor"})
         t0 = time.time()
@@ -210,6 +221,8 @@ def download_speed(bytes_count: int = 10_000_000, timeout: int = 20) -> float:
                 if not chunk:
                     break
                 total += len(chunk)
+                if total > cap:
+                    break
         dt = time.time() - t0
         if dt <= 0 or total <= 0:
             return -1
