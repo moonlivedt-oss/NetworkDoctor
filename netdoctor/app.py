@@ -95,9 +95,9 @@ class NetworkDoctor(QMainWindow):
         # Шапка: логотип + заголовок/подзаголовок + панель оформления
         head = QHBoxLayout()
         head.setSpacing(11)
-        logo = QLabel()
-        logo.setPixmap(make_app_icon().pixmap(QSize(38, 38)))
-        head.addWidget(logo, 0, Qt.AlignmentFlag.AlignTop)
+        self._logo = QLabel()
+        self._logo.setPixmap(make_app_icon().pixmap(QSize(38, 38)))
+        head.addWidget(self._logo, 0, Qt.AlignmentFlag.AlignTop)
 
         titlebox = QVBoxLayout()
         titlebox.setSpacing(1)
@@ -112,6 +112,7 @@ class NetworkDoctor(QMainWindow):
         head.addLayout(titlebox, 1)
 
         head.addLayout(self._build_appearance(), 0)
+        self._head = head  # поля выравниваются по контенту в _apply_content_width
         outer.addLayout(head)
 
         # Прокручиваемая страница: всё ниже шапки. Контент любой высоты доступен
@@ -123,13 +124,19 @@ class NetworkDoctor(QMainWindow):
         page_scroll.setFrameShape(QFrame.Shape.NoFrame)
         page_scroll.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._page_scroll = page_scroll
+        # Тело: контент ограничен по ширине и центрирован. На узком/среднем окне
+        # занимает всю ширину, на широком (развёрнутом) — держится комфортной
+        # ширины по центру, а не растягивается на весь экран. Поля по бокам
+        # задаются динамически в _apply_content_width().
         body = QWidget()
-        root = QVBoxLayout(body)
-        # scroll сам отдаёт место под вертикальный скроллбар, поэтому тело почти
-        # без собственных полей — небольшой правый зазор, чтобы карточки не
-        # прилипали к скроллбару
-        root.setContentsMargins(0, 0, 3, 0)
+        self._body_h = QHBoxLayout(body)
+        self._body_h.setContentsMargins(0, 0, 0, 0)
+        content = QWidget()
+        root = QVBoxLayout(content)
+        root.setContentsMargins(0, 0, 3, 0)  # правый зазор под скроллбар
         root.setSpacing(12)
+        self._body_h.addWidget(content)
         page_scroll.setWidget(body)
         outer.addWidget(page_scroll, 1)
 
@@ -385,6 +392,19 @@ class NetworkDoctor(QMainWindow):
         root.addWidget(frame)
         return v
 
+    MAX_CONTENT_WIDTH = 1040  # предел ширины контента на широком окне
+
+    def _apply_content_width(self) -> None:
+        """Центрировать контент и ограничить его ширину на широком окне."""
+        ps = getattr(self, "_page_scroll", None)
+        if ps is None:
+            return
+        vw = ps.viewport().width()
+        side = max(0, (vw - self.MAX_CONTENT_WIDTH) // 2)
+        self._body_h.setContentsMargins(side, 0, side, 0)
+        # шапка вне прокрутки — выравниваем её по центрированному контенту
+        self._head.setContentsMargins(side, 0, side, 0)
+
     def _relayout_tools(self) -> None:
         """Разложить кнопки-инструменты в сетку по ширине окна: 1/2/3 колонки.
 
@@ -393,7 +413,7 @@ class NetworkDoctor(QMainWindow):
         grid = getattr(self, "_tools_grid", None)
         if grid is None:
             return
-        w = self.width()
+        w = min(self.width(), self.MAX_CONTENT_WIDTH)  # реальная ширина контента
         cols = 3 if w >= 900 else (2 if w >= 620 else 1)
         if cols == self._tools_cols:
             return
@@ -413,14 +433,18 @@ class NetworkDoctor(QMainWindow):
         box.setSpacing(6)
         self.btn_theme = QPushButton()
         self.btn_theme.setObjectName("appBtn")
+        self.btn_theme.setFixedSize(30, 30)
+        self.btn_theme.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_theme.setToolTip("Переключить тёмную/светлую тему")
         self.btn_theme.clicked.connect(self._toggle_theme)
         box.addWidget(self.btn_theme, 0, Qt.AlignmentFlag.AlignVCenter)
+        box.addSpacing(4)
 
         self._swatches = {}
         for name in theme.ACCENT_LABELS:
             b = QPushButton()
-            b.setFixedSize(20, 20)
+            b.setObjectName("swatch")
+            b.setFixedSize(22, 22)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.setToolTip("Акцент: " + theme.ACCENT_LABELS.get(name, name).lower())
             b.clicked.connect(lambda _, n=name: self._set_accent(n))
@@ -438,9 +462,9 @@ class NetworkDoctor(QMainWindow):
             sel = name == theme.ACCENT_NAME
             border = theme.C_TITLE if sel else "transparent"
             b.setStyleSheet(
-                f"QPushButton{{background:{col}; border-radius:10px; "
-                f"border:2px solid {border};}}"
-                f"QPushButton:hover{{border:2px solid {theme.C_MUTED};}}")
+                f"QPushButton#swatch{{ background:{col}; "
+                f"border:2px solid {border}; }}"
+                f"QPushButton#swatch:hover{{ border:2px solid {theme.C_TEXT}; }}")
 
     def _toggle_theme(self) -> None:
         new = "dark" if theme.THEME_NAME == "light" else "light"
@@ -464,6 +488,7 @@ class NetworkDoctor(QMainWindow):
         else:
             self._placeholder(self._placeholder_text or "")
         icon = make_app_icon()
+        self._logo.setPixmap(icon.pixmap(QSize(38, 38)))  # логотип в тон акценту
         self.setWindowIcon(icon)
         if self._tray is not None:
             self._tray.setIcon(icon)
@@ -477,12 +502,16 @@ class NetworkDoctor(QMainWindow):
         effect = QGraphicsOpacityEffect(w)
         w.setGraphicsEffect(effect)
         anim = QPropertyAnimation(effect, b"opacity", w)
-        anim.setDuration(220)
-        anim.setStartValue(0.55)
+        anim.setDuration(160)
+        anim.setStartValue(0.7)
         anim.setEndValue(1.0)
         anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-        # снять эффект по завершении — иначе он «съедает» дочерние эффекты карточек
-        anim.finished.connect(lambda: w.setGraphicsEffect(None))
+        # снять эффект по завершении — иначе он «съедает» дочерние эффекты
+        # карточек; но не трогать более новый эффект, если тему успели
+        # переключить ещё раз (быстрый двойной клик)
+        anim.finished.connect(
+            lambda: w.setGraphicsEffect(None)
+            if w.graphicsEffect() is effect else None)
         self._fade_anim = anim  # держим ссылку, иначе анимация умрёт
         anim.start()
 
@@ -1366,10 +1395,13 @@ class NetworkDoctor(QMainWindow):
     # -- автозапуск диагностики, сворачивание, закрытие --------------------
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        self._relayout_tools()  # адаптивные колонки инструментов
+        self._apply_content_width()  # центрирование/предел ширины на широком окне
+        self._relayout_tools()       # адаптивные колонки инструментов
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
+        self._apply_content_width()  # корректная ширина после раскладки окна
+        self._relayout_tools()
         if not self._auto_done:
             self._auto_done = True
             QTimer.singleShot(350, self.on_diagnose)  # автодиагностика

@@ -161,6 +161,7 @@ def _build_style(p: dict) -> str:
     """Собрать QSS из палитры p."""
     acc = _rgba(p["accent"], 0.22)
     acc_soft = _rgba(p["accent"], 0.12)
+    acc_border = _rgba(p["accent"], 0.45)
     focus = _rgba(p["accent"], 0.55)
     return f"""
 QMainWindow, QDialog {{
@@ -203,7 +204,7 @@ QPushButton#danger:hover {{ background: {p['danger_h_bg']};
 QPushButton#danger:pressed {{ background: {p['danger_pressed']}; }}
 QFrame#card {{ background: {p['card_bg']}; border: 1px solid {p['card_border']};
               border-radius: 12px; }}
-QFrame#card:hover {{ border-color: {p['card_h_border']}; background: {p['card_h_bg']}; }}
+QFrame#card:hover {{ border-color: {acc_border}; background: {p['card_h_bg']}; }}
 QFrame#strip {{ background: {p['strip_bg']}; border: 1px solid {p['strip_border']};
                border-radius: 12px; }}
 QFrame#panel {{ background: {p['strip_bg']}; border: 1px solid {p['strip_border']};
@@ -215,19 +216,21 @@ QPushButton#toggle:checked {{
     color: {p['accent_soft']}; font-weight: 600;
 }}
 QPushButton#toggle:checked:hover {{ background: {_rgba(p['accent'], 0.30)}; }}
-QLabel#section {{ color: {p['muted']}; font-weight: 600; letter-spacing: 0.6px;
+QLabel#section {{ color: {p['accent_soft']}; font-weight: 700; letter-spacing: 0.8px;
                  font-size: 11px; }}
 QPushButton#link {{
     background: transparent; border: none; color: {p['muted']};
-    padding: 2px 8px; font-size: 12px; border-radius: 6px;
+    padding: 2px 8px; font-size: 12px; border-radius: 6px; min-height: 0;
 }}
 QPushButton#link:hover {{ color: {p['accent_soft']}; background: {acc_soft}; }}
 QPushButton#appBtn {{
     background: {p['btn_bg']}; border: 1px solid {p['btn_border']};
-    border-radius: 9px; padding: 6px 10px; font-size: 14px; min-width: 16px;
+    border-radius: 15px; padding: 0; font-size: 15px; min-width: 0; min-height: 0;
 }}
 QPushButton#appBtn:hover {{ background: {p['btn_hover_bg']};
-                           border-color: {p['btn_hover_border']}; }}
+                           border-color: {p['accent']}; }}
+QPushButton#swatch {{ background: {p['btn_bg']}; border: 2px solid transparent;
+    border-radius: 11px; padding: 0; min-width: 0; min-height: 0; }}
 QPlainTextEdit {{
     background: {p['input_bg']}; color: {p['input_text']};
     border: 1px solid {p['input_border']};
