@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "networkdoctor"
+version = "2.4"
+description = "Сетевой доктор для Windows: чинит интернет после застрявшего прокси и остатков VPN-туннелей."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "PyQt6>=6.5,<7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7",
+    "pyinstaller>=6",
+]
+
+[project.gui-scripts]
+networkdoctor = "netdoctor.app:main"
+
+[tool.setuptools]
+packages = ["netdoctor"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

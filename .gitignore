@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+
+# Тесты / кеши
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Сборка PyInstaller
+build/
+dist/
+*.spec
+
+# Рантайм-данные приложения (логи, история, настройки, бэкапы)
+logs/
+
+# ОС / редакторы
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
