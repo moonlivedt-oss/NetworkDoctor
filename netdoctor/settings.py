@@ -22,7 +22,7 @@ DEFAULTS = {
     "autofix": False,          # авто-починка при обрыве
     "ping_host": "1.1.1.1",    # хост по умолчанию для «Пинг хоста»
     "monitor_interval": 20,    # период проверки связи мониторингом, сек
-    "github_repo": "",         # 'owner/name' для проверки обновлений
+    "github_repo": "moonlivedt-oss/MoonMinder",  # 'owner/name' для проверки обновлений
 }
 
 _data: dict = dict(DEFAULTS)
