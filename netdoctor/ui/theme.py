@@ -110,6 +110,26 @@ ACCENTS: dict[str, dict[str, dict]] = {
                   "primary_pressed": "#177466",
                   "accent": "#1f8a78", "accent_soft": "#17685a", "busy": "#1f8a78"},
     },
+    "emerald": {
+        "dark": {"primary1": "#5fce8f", "primary2": "#46b978",
+                 "primary_h1": "#74d89f", "primary_h2": "#55c488",
+                 "primary_pressed": "#3fa96c",
+                 "accent": "#5fce8f", "accent_soft": "#bceccd", "busy": "#74d89f"},
+        "light": {"primary1": "#2f9f63", "primary2": "#1f8a52",
+                  "primary_h1": "#3aab6f", "primary_h2": "#27965c",
+                  "primary_pressed": "#17743f",
+                  "accent": "#1f8a52", "accent_soft": "#176840", "busy": "#1f8a52"},
+    },
+    "amber": {
+        "dark": {"primary1": "#e3b563", "primary2": "#d0a045",
+                 "primary_h1": "#edc47a", "primary_h2": "#d8ab52",
+                 "primary_pressed": "#c6963f",
+                 "accent": "#e3b563", "accent_soft": "#f2e0b6", "busy": "#edc47a"},
+        "light": {"primary1": "#b5842f", "primary2": "#9f7220",
+                  "primary_h1": "#c2923c", "primary_h2": "#ab7e28",
+                  "primary_pressed": "#8a6218",
+                  "accent": "#9f7220", "accent_soft": "#7a5716", "busy": "#9f7220"},
+    },
     "rose": {
         "dark": {"primary1": "#e090ac", "primary2": "#cf7a9a",
                  "primary_h1": "#ec9dbb", "primary_h2": "#d886a6",
@@ -123,8 +143,9 @@ ACCENTS: dict[str, dict[str, dict]] = {
 }
 
 # Человекочитаемые названия акцентов (для настроек / всплывающих подсказок).
-ACCENT_LABELS = {"violet": "Фиолетовый", "blue": "Синий",
-                 "teal": "Бирюзовый", "rose": "Розовый"}
+# Порядок — по спектру (для свотчей в шапке и списка в настройках).
+ACCENT_LABELS = {"violet": "Фиолетовый", "blue": "Синий", "teal": "Бирюзовый",
+                 "emerald": "Изумрудный", "amber": "Янтарный", "rose": "Розовый"}
 
 
 def _compose(name: str, accent: str) -> dict:
@@ -156,6 +177,7 @@ QLabel#adminOk {{ color: {p['ok']}; }}
 QPushButton {{
     background: {p['btn_bg']}; color: {p['text']}; border: 1px solid {p['btn_border']};
     border-radius: 11px; padding: 11px 14px; font-size: 13px; outline: none;
+    min-height: 18px;  /* нижний предел высоты — подпись никогда не обрежется */
 }}
 QPushButton:hover {{ background: {p['btn_hover_bg']}; border-color: {p['btn_hover_border']}; }}
 QPushButton:pressed {{ background: {p['btn_pressed']}; }}
@@ -183,6 +205,8 @@ QFrame#card {{ background: {p['card_bg']}; border: 1px solid {p['card_border']};
               border-radius: 12px; }}
 QFrame#card:hover {{ border-color: {p['card_h_border']}; background: {p['card_h_bg']}; }}
 QFrame#strip {{ background: {p['strip_bg']}; border: 1px solid {p['strip_border']};
+               border-radius: 12px; }}
+QFrame#panel {{ background: {p['strip_bg']}; border: 1px solid {p['strip_border']};
                border-radius: 12px; }}
 QFrame#hline {{ background: {p['hline']}; border: none; max-height: 1px; }}
 QPushButton#toggle {{ padding: 8px 13px; border-radius: 9px; font-size: 12px; }}

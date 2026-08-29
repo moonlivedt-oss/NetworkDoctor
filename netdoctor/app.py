@@ -14,9 +14,10 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
-    QApplication, QFileDialog, QFrame, QGraphicsOpacityEffect, QHBoxLayout,
-    QInputDialog, QLabel, QMainWindow, QMenu, QMessageBox, QPlainTextEdit,
-    QPushButton, QScrollArea, QSystemTrayIcon, QVBoxLayout, QWidget,
+    QApplication, QFileDialog, QFrame, QGraphicsOpacityEffect, QGridLayout,
+    QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMenu, QMessageBox,
+    QPlainTextEdit, QPushButton, QScrollArea, QSystemTrayIcon, QVBoxLayout,
+    QWidget,
 )
 
 from .core import OK, WARN, BAD, is_admin, relaunch_as_admin
@@ -42,6 +43,7 @@ from .net.tools import (
 )
 from .ui import theme
 from .ui.theme import make_app_icon, hline, Spinner
+from .ui.flow import FlowLayout
 from .workers import (
     DiagnoseWorker, FixWorker, TaskWorker, SmartFixWorker, MonitorWorker,
 )
@@ -58,8 +60,10 @@ class NetworkDoctor(QMainWindow):
     def __init__(self, start_hidden: bool = False):
         super().__init__()
         self.setWindowTitle("NetworkDoctor — сетевой доктор")
-        self.resize(660, 860)
-        self.setMinimumSize(560, 720)
+        self.resize(680, 880)
+        # ниже минимум по высоте — теперь всё ниже шапки прокручивается,
+        # поэтому окно можно уменьшить, ничего не обрезав
+        self.setMinimumSize(430, 480)
         self.setStyleSheet(theme.STYLE)
         self._worker = None
         self._tworker = None
@@ -84,9 +88,9 @@ class NetworkDoctor(QMainWindow):
 
         central = QWidget()
         self.setCentralWidget(central)
-        root = QVBoxLayout(central)
-        root.setContentsMargins(18, 18, 18, 18)
-        root.setSpacing(12)
+        outer = QVBoxLayout(central)
+        outer.setContentsMargins(18, 18, 18, 18)
+        outer.setSpacing(12)
 
         # Шапка: логотип + заголовок/подзаголовок + панель оформления
         head = QHBoxLayout()
@@ -108,18 +112,35 @@ class NetworkDoctor(QMainWindow):
         head.addLayout(titlebox, 1)
 
         head.addLayout(self._build_appearance(), 0)
-        root.addLayout(head)
+        outer.addLayout(head)
+
+        # Прокручиваемая страница: всё ниже шапки. Контент любой высоты доступен
+        # на узком/невысоком окне, кнопки не сжимаются и не теряют подписи, а на
+        # широком окне сетка инструментов раскладывается в 2–3 колонки — панель
+        # становится ниже и помещается без прокрутки.
+        page_scroll = QScrollArea()
+        page_scroll.setWidgetResizable(True)
+        page_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        page_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        body = QWidget()
+        root = QVBoxLayout(body)
+        # scroll сам отдаёт место под вертикальный скроллбар, поэтому тело почти
+        # без собственных полей — небольшой правый зазор, чтобы карточки не
+        # прилипали к скроллбару
+        root.setContentsMargins(0, 0, 3, 0)
+        root.setSpacing(12)
+        page_scroll.setWidget(body)
+        outer.addWidget(page_scroll, 1)
 
         # Полоса управления: автозапуск / мониторинг / авто-починка
         strip = QFrame()
         strip.setObjectName("strip")
-        srow = QHBoxLayout(strip)
+        srow = FlowLayout(strip, hspacing=8, vspacing=8)
         srow.setContentsMargins(12, 8, 12, 8)
-        srow.setSpacing(8)
         strip_lbl = QLabel("ФОН")
         strip_lbl.setObjectName("section")
-        srow.addWidget(strip_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
-        srow.addStretch()
+        srow.addWidget(strip_lbl)
 
         self.btn_autostart = QPushButton("Автозапуск")
         self.btn_autostart.setObjectName("toggle")
@@ -209,22 +230,20 @@ class NetworkDoctor(QMainWindow):
         actions.addWidget(self.btn_smart, 1)
         root.addLayout(actions)
 
-        # Область результатов (прокручиваемая)
-        self.scroll = QScrollArea()
-        self.scroll.setWidgetResizable(True)
+        # Область результатов (в общей прокрутке страницы)
         self.results_host = QWidget()
         self.results_lay = QVBoxLayout(self.results_host)
         self.results_lay.setContentsMargins(0, 0, 0, 0)
         self.results_lay.setSpacing(8)
         self.results_lay.addStretch()
-        self.scroll.setWidget(self.results_host)
-        root.addWidget(self.scroll, 1)
+        root.addWidget(self.results_host)
 
         self._placeholder("Нажми «Проверить сеть», чтобы увидеть состояние.")
 
-        # Кнопки починки
-        fixes = QHBoxLayout()
-        fixes.setSpacing(8)
+        # Панель «Починка»
+        fix_v = self._panel("ПОЧИНКА", root)
+        frow = QHBoxLayout()
+        frow.setSpacing(8)
         self.btn_quick = QPushButton("Быстрая починка прокси")
         self.btn_quick.setToolTip("Сброс системного прокси + WinHTTP + "
                                   "переменных окружения + DNS. Без перезагрузки.")
@@ -232,9 +251,9 @@ class NetworkDoctor(QMainWindow):
         self.btn_ip = QPushButton("Обновить IP")
         self.btn_ip.setToolTip("ipconfig release + renew.")
         self.btn_ip.clicked.connect(self.on_ip_fix)
-        fixes.addWidget(self.btn_quick, 2)
-        fixes.addWidget(self.btn_ip, 1)
-        root.addLayout(fixes)
+        frow.addWidget(self.btn_quick, 2)
+        frow.addWidget(self.btn_ip, 1)
+        fix_v.addLayout(frow)
 
         self.btn_vpn_remnants = QPushButton("Убрать остатки VPN "
                                             "(файрвол / маршруты / MTU)")
@@ -243,23 +262,17 @@ class NetworkDoctor(QMainWindow):
             "зависшие маршруты мёртвых туннелей и возвращает MTU к 1500. "
             "Без перезагрузки. Требует прав администратора.")
         self.btn_vpn_remnants.clicked.connect(self.on_fix_vpn_remnants)
-        root.addWidget(self.btn_vpn_remnants)
+        fix_v.addWidget(self.btn_vpn_remnants)
 
         self.btn_deep = QPushButton("Глубокий сброс сети (нужна перезагрузка)")
         self.btn_deep.setObjectName("danger")
         self.btn_deep.setToolTip("netsh winsock reset + netsh int ip reset. "
                                  "Полностью пересобирает сетевой стек.")
         self.btn_deep.clicked.connect(self.on_deep_fix)
-        root.addWidget(self.btn_deep)
+        fix_v.addWidget(self.btn_deep)
 
-        # Раздел «Инструменты»
-        root.addWidget(hline())
-        tools_lbl = QLabel("ИНСТРУМЕНТЫ")
-        tools_lbl.setObjectName("section")
-        root.addWidget(tools_lbl)
-
-        tools_row1 = QHBoxLayout()
-        tools_row1.setSpacing(8)
+        # Панель «Инструменты» — сетка 2 колонки
+        tools_v = self._panel("ИНСТРУМЕНТЫ", root)
         self.btn_procs = QPushButton("Зависшие прокси-процессы")
         self.btn_procs.setToolTip("Показать процессы на прокси-портах и "
                                   "завершить лишние.")
@@ -268,12 +281,6 @@ class NetworkDoctor(QMainWindow):
         self.btn_adapter.setToolTip("Отключить/включить сетевой адаптер "
                                     "(без перезагрузки).")
         self.btn_adapter.clicked.connect(self.on_restart_adapter)
-        tools_row1.addWidget(self.btn_procs)
-        tools_row1.addWidget(self.btn_adapter)
-        root.addLayout(tools_row1)
-
-        tools_row2 = QHBoxLayout()
-        tools_row2.setSpacing(8)
         self.btn_dns = QPushButton("Переключить DNS")
         self.btn_dns.setToolTip("Поставить 1.1.1.1 / 8.8.8.8 или вернуть авто.")
         self.btn_dns.clicked.connect(self.on_dns)
@@ -281,12 +288,6 @@ class NetworkDoctor(QMainWindow):
         self.btn_ipinfo.setToolTip("Внешний IP (проверка утечки) + "
                                    "ping/потери пакетов.")
         self.btn_ipinfo.clicked.connect(self.on_ip_info)
-        tools_row2.addWidget(self.btn_dns)
-        tools_row2.addWidget(self.btn_ipinfo)
-        root.addLayout(tools_row2)
-
-        tools_row3 = QHBoxLayout()
-        tools_row3.setSpacing(8)
         self.btn_ipv6 = QPushButton("Переключить IPv6")
         self.btn_ipv6.setToolTip("Включить/выключить IPv6 на активном адаптере. "
                                  "Частый виновник глюков после VPN. Требует "
@@ -296,12 +297,6 @@ class NetworkDoctor(QMainWindow):
         self.btn_dnsinfo.setToolTip("Какие DNS-серверы реально используются на "
                                     "адаптерах + подсказка об утечке DNS.")
         self.btn_dnsinfo.clicked.connect(self.on_dns_info)
-        tools_row3.addWidget(self.btn_ipv6)
-        tools_row3.addWidget(self.btn_dnsinfo)
-        root.addLayout(tools_row3)
-
-        tools_row4 = QHBoxLayout()
-        tools_row4.setSpacing(8)
         self.btn_conns = QPushButton("Активные соединения")
         self.btn_conns.setToolTip("Внешние TCP-соединения с именем процесса — "
                                   "куда подключён твой ПК.")
@@ -310,12 +305,6 @@ class NetworkDoctor(QMainWindow):
         self.btn_adapter_info.setToolTip("IP, шлюз, DNS, MAC, скорость линка, "
                                          "DHCP выбранного адаптера.")
         self.btn_adapter_info.clicked.connect(self.on_adapter_details)
-        tools_row4.addWidget(self.btn_conns)
-        tools_row4.addWidget(self.btn_adapter_info)
-        root.addLayout(tools_row4)
-
-        tools_row5 = QHBoxLayout()
-        tools_row5.setSpacing(8)
         self.btn_ping = QPushButton("Пинг хоста")
         self.btn_ping.setToolTip("Пинг и потери до любого адреса (IP или домен).")
         self.btn_ping.clicked.connect(self.on_ping_host)
@@ -323,9 +312,6 @@ class NetworkDoctor(QMainWindow):
         self.btn_mtu.setToolTip("Найти оптимальный MTU (DF-пинг) и предложить "
                                 "установить его. Установка требует админа.")
         self.btn_mtu.clicked.connect(self.on_probe_mtu)
-        tools_row5.addWidget(self.btn_ping)
-        tools_row5.addWidget(self.btn_mtu)
-        root.addLayout(tools_row5)
 
         # список кнопок-инструментов, чтобы блокировать во время работы
         self._tool_btns = [self.btn_procs, self.btn_adapter, self.btn_dns,
@@ -337,13 +323,21 @@ class NetworkDoctor(QMainWindow):
         self._fix_btns = [self.btn_quick, self.btn_ip, self.btn_deep,
                           self.btn_vpn_remnants]
 
-        # Журнал
+        # адаптивная сетка инструментов (1/2/3 колонки по ширине окна)
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(8)
+        self._tools_grid = grid
+        self._tools_cols = None  # None → _relayout_tools разложит с нуля
+        tools_v.addLayout(grid)
+        self._relayout_tools()
+
+        # Журнал (строка действий переносится на узком окне)
         root.addWidget(hline())
-        log_head = QHBoxLayout()
+        log_head = FlowLayout(hspacing=4, vspacing=4)
         log_lbl = QLabel("ЖУРНАЛ")
         log_lbl.setObjectName("section")
         log_head.addWidget(log_lbl)
-        log_head.addStretch()
         for text, tip, slot in (
             ("Настройки", "Тема оформления и хост по умолчанию для пинга.",
              self.on_settings),
@@ -377,6 +371,40 @@ class NetworkDoctor(QMainWindow):
 
         theme.subscribe(self.restyle)  # перерисовать окно при смене темы
 
+    # -- построение секций -------------------------------------------------
+    def _panel(self, title: str, root: QVBoxLayout) -> QVBoxLayout:
+        """Панель-контейнер с заголовком-секцией. Возвращает layout для наполнения."""
+        frame = QFrame()
+        frame.setObjectName("panel")
+        v = QVBoxLayout(frame)
+        v.setContentsMargins(12, 10, 12, 12)
+        v.setSpacing(8)
+        lbl = QLabel(title)
+        lbl.setObjectName("section")
+        v.addWidget(lbl)
+        root.addWidget(frame)
+        return v
+
+    def _relayout_tools(self) -> None:
+        """Разложить кнопки-инструменты в сетку по ширине окна: 1/2/3 колонки.
+
+        Узкое окно — один столбец (длинные подписи целиком); широкое — три,
+        так панель занимает меньше рядов по высоте."""
+        grid = getattr(self, "_tools_grid", None)
+        if grid is None:
+            return
+        w = self.width()
+        cols = 3 if w >= 900 else (2 if w >= 620 else 1)
+        if cols == self._tools_cols:
+            return
+        self._tools_cols = cols
+        while grid.count():
+            grid.takeAt(0)  # виджеты остаются, снимаем только элементы сетки
+        for i, b in enumerate(self._tool_btns):
+            grid.addWidget(b, i // cols, i % cols)
+        for c in range(3):
+            grid.setColumnStretch(c, 1 if c < cols else 0)
+
     # -- оформление (тема/акцент на лету) ----------------------------------
     def _build_appearance(self) -> QHBoxLayout:
         """Панель в шапке: переключатель тёмной/светлой темы + акцентные цвета.
@@ -390,7 +418,7 @@ class NetworkDoctor(QMainWindow):
         box.addWidget(self.btn_theme, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self._swatches = {}
-        for name in ("violet", "blue", "teal", "rose"):
+        for name in theme.ACCENT_LABELS:
             b = QPushButton()
             b.setFixedSize(20, 20)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -439,6 +467,24 @@ class NetworkDoctor(QMainWindow):
         self.setWindowIcon(icon)
         if self._tray is not None:
             self._tray.setIcon(icon)
+        self._fade_in()
+
+    def _fade_in(self) -> None:
+        """Короткий плавный fade центральной области при смене темы."""
+        w = self.centralWidget()
+        if w is None or not self.isVisible():
+            return
+        effect = QGraphicsOpacityEffect(w)
+        w.setGraphicsEffect(effect)
+        anim = QPropertyAnimation(effect, b"opacity", w)
+        anim.setDuration(220)
+        anim.setStartValue(0.55)
+        anim.setEndValue(1.0)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        # снять эффект по завершении — иначе он «съедает» дочерние эффекты карточек
+        anim.finished.connect(lambda: w.setGraphicsEffect(None))
+        self._fade_anim = anim  # держим ссылку, иначе анимация умрёт
+        anim.start()
 
     # -- фоновые потоки ----------------------------------------------------
     def _track(self, thread):
@@ -1318,6 +1364,10 @@ class NetworkDoctor(QMainWindow):
         self.close()
 
     # -- автозапуск диагностики, сворачивание, закрытие --------------------
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._relayout_tools()  # адаптивные колонки инструментов
+
     def showEvent(self, event) -> None:
         super().showEvent(event)
         if not self._auto_done:
