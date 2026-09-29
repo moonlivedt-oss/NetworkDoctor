@@ -12,10 +12,12 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+import platform
 import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+from . import __version__
 from .core import OK, WARN, BAD, INFO, is_admin, logger
 
 
@@ -113,10 +115,16 @@ def build_report(items: list[dict] | None, log_text: str) -> str:
     """
     marks = {OK: "[ OK ]", WARN: "[ !! ]", BAD: "[ XX ]", INFO: "[ ii ]"}
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        win = f"{platform.system()} {platform.release()} (сборка {platform.version()})"
+    except Exception:
+        win = "?"
     lines = [
         "NetworkDoctor — отчёт о состоянии сети",
         "=" * 52,
+        f"Версия NetworkDoctor: {__version__}",
         f"Дата:                 {now}",
+        f"Система:              {win}",
         f"Права администратора: {'да' if is_admin() else 'нет'}",
         f"Python:               {sys.version.split()[0]}",
         "",

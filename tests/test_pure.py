@@ -218,3 +218,95 @@ def test_check_hosts_file_runs():
     card = diag.check_hosts_file()
     assert card["status"] in (OK, WARN, "info")
     assert card["title"] == "Файл hosts"
+
+# --- авто-проверка обновлений (троттлинг раз в сутки) ---------------------
+def test_due_for_auto_check():
+    assert updates.due_for_auto_check("", "2026-09-03") is True
+    assert updates.due_for_auto_check("2026-09-02", "2026-09-03") is True
+    assert updates.due_for_auto_check("2026-09-03", "2026-09-03") is False
+
+
+# --- классификация системного прокси (HKCU + HKLM) ------------------------
+def test_classify_wininet():
+    assert diag._classify_wininet(0, "", "", "")["status"] == OK
+    assert diag._classify_wininet(1, "proxy:8080", "", "")["status"] == WARN
+    # прокси уровня машины виден, даже если у пользователя выключено
+    r = diag._classify_wininet(0, "", "", "10.0.0.1:8080")
+    assert r["status"] == WARN and "HKLM" in r["detail"]
+    # автонастройка (PAC)
+    assert diag._classify_wininet(0, "", "http://pac", "")["status"] == WARN
+
+
+# --- движок рекомендаций после диагностики -------------------------------
+def test_recommend_action_priorities():
+    assert diag.recommend_action([{"title": "X", "status": OK}]) is None
+    # нет даже прямого TCP → обновить IP
+    assert diag.recommend_action(
+        [{"title": "Прямое соединение (TCP)", "status": BAD}])["key"] == "ip"
+    # вывод-подсказка «плохо» (застрявший прокси) → умная починка
+    assert diag.recommend_action(
+        [{"title": "⟹ Вывод", "status": BAD}])["key"] == "smart"
+    # остатки VPN (kill-switch) → убрать остатки VPN
+    assert diag.recommend_action(
+        [{"title": "Файрвол: блок-правила (kill-switch)",
+          "status": WARN}])["key"] == "vpn"
+    # просто задан прокси → быстрая починка
+    assert diag.recommend_action(
+        [{"title": "Системный прокси Windows", "status": WARN}])["key"] == "quick"
+
+
+def test_recommend_action_prefers_more_severe():
+    # TCP мёртв важнее, чем предупреждение о прокси
+    items = [{"title": "Системный прокси Windows", "status": WARN},
+             {"title": "Прямое соединение (TCP)", "status": BAD}]
+    assert diag.recommend_action(items)["key"] == "ip"
+
+
+# --- DNS-бенчмарк: сборка запроса и разбор ответа -------------------------
+def test_dns_encode_name():
+    assert nt._encode_dns_name("example.com") == b"\x07example\x03com\x00"
+    assert nt._encode_dns_name("a.b.c") == b"\x01a\x01b\x01c\x00"
+
+
+def test_dns_build_query_header():
+    q = nt._build_dns_query("example.com", 0x1234)
+    assert q[:2] == b"\x12\x34"           # txid
+    assert q[2:4] == b"\x01\x00"          # recursion desired
+    assert q[4:6] == b"\x00\x01"          # QDCOUNT=1
+    assert b"\x07example\x03com\x00" in q
+    assert q.endswith(b"\x00\x01\x00\x01")  # QTYPE=A, QCLASS=IN
+
+
+def test_dns_response_ok():
+    import struct
+    txid = 0xABCD
+    good = struct.pack(">HHHHHH", txid, 0x8180, 1, 1, 0, 0)   # ответ, rcode=0
+    assert nt._dns_response_ok(good, txid) is True
+    assert nt._dns_response_ok(
+        struct.pack(">HHHHHH", 0x1111, 0x8180, 1, 1, 0, 0), txid) is False  # чужой id
+    assert nt._dns_response_ok(
+        struct.pack(">HHHHHH", txid, 0x8182, 1, 0, 0, 0), txid) is False  # SERVFAIL
+    assert nt._dns_response_ok(b"\x00\x01", txid) is False    # слишком короткий
+
+
+def test_benchmark_dns_sorts(monkeypatch):
+    fake = {"1.1.1.1": 12.0, "8.8.8.8": 5.0, "9.9.9.9": -1,
+            "208.67.222.222": 20.0, "77.88.8.8": -1}
+    monkeypatch.setattr(
+        nt, "dns_latency",
+        lambda server, name="example.com", timeout=2.0: fake.get(server, -1))
+    rows = nt.benchmark_dns()
+    assert rows[0]["server"] == "8.8.8.8"       # самый быстрый — первым
+    assert rows[1]["server"] == "1.1.1.1"
+    assert all(r["ms"] < 0 for r in rows[-2:])  # недоступные — в конце
+
+
+# --- текстовые представления диалогов (статические, без Qt-цикла) ---------
+def test_dialog_as_text_helpers():
+    from netdoctor.ui.dialogs import ConnectionsDialog, DnsInfoDialog
+    rows = [{"name": "chrome", "pid": "12",
+             "local": "1.2.3.4:5", "remote": "9.9.9.9:443"}]
+    txt = ConnectionsDialog._as_text(rows)
+    assert "chrome" in txt and "9.9.9.9:443" in txt
+    dns = DnsInfoDialog._as_text([{"iface": "Wi-Fi", "servers": ["1.1.1.1"]}])
+    assert "Wi-Fi" in dns and "1.1.1.1" in dns

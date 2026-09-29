@@ -5,15 +5,22 @@ from __future__ import annotations
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
-    QComboBox, QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
-    QPushButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget,
+    QApplication, QCheckBox, QComboBox, QDialog, QFrame, QHBoxLayout, QLabel,
+    QLineEdit, QMessageBox, QPushButton, QScrollArea, QSpinBox, QVBoxLayout,
+    QWidget,
 )
 
-from ..core import OK, WARN, BAD
-from ..logs import STATE_FILE, read_state_history
+from .. import __version__
+from ..core import OK, WARN, BAD, is_admin
+from ..logs import LOG_DIR, STATE_FILE, read_state_history
 from ..net.tools import country_name, kill_process, PUBLIC_DNS, valid_host
 from .. import settings
 from . import theme
+
+
+def _copy_to_clipboard(text: str) -> None:
+    """Положить текст в буфер обмена (для кнопок «Копировать» в диалогах)."""
+    QApplication.clipboard().setText(text)
 
 
 class ResultCard(QFrame):
@@ -302,9 +309,25 @@ class AdapterDetailsDialog(QDialog):
             _kv_row(lay, label, data.get(key, ""))
         lay.addStretch()
 
+        btn_row = QHBoxLayout()
+        copy = QPushButton("Копировать")
+        copy.setToolTip("Скопировать сведения об адаптере в буфер обмена.")
+        copy.clicked.connect(lambda: _copy_to_clipboard(self._as_text(data)))
+        btn_row.addWidget(copy)
+        btn_row.addStretch()
         close = QPushButton("Закрыть")
         close.clicked.connect(self.accept)
-        lay.addWidget(close)
+        btn_row.addWidget(close)
+        lay.addLayout(btn_row)
+
+    @staticmethod
+    def _as_text(data: dict) -> str:
+        order = (("Адаптер", "iface"), ("Статус", "status"),
+                 ("IPv4-адрес", "ip"), ("Шлюз", "gw"), ("DNS-серверы", "dns"),
+                 ("MAC-адрес", "mac"), ("Скорость линка", "link"),
+                 ("DHCP", "dhcp"))
+        return "\n".join(f"{label}: {data.get(key, '') or '—'}"
+                         for label, key in order)
 
 
 class DnsInfoDialog(QDialog):
@@ -334,9 +357,21 @@ class DnsInfoDialog(QDialog):
         scroll.setWidget(host)
         lay.addWidget(scroll, 1)
 
+        btn_row = QHBoxLayout()
+        copy = QPushButton("Копировать")
+        copy.setToolTip("Скопировать список DNS-серверов в буфер обмена.")
+        copy.clicked.connect(lambda: _copy_to_clipboard(self._as_text(rows)))
+        btn_row.addWidget(copy)
+        btn_row.addStretch()
         close = QPushButton("Закрыть")
         close.clicked.connect(self.accept)
-        lay.addWidget(close)
+        btn_row.addWidget(close)
+        lay.addLayout(btn_row)
+
+    @staticmethod
+    def _as_text(rows: list[dict]) -> str:
+        lines = [f"{r['iface']}: {', '.join(r['servers'])}" for r in rows]
+        return "Текущий DNS:\n" + ("\n".join(lines) or "(не задано)")
 
     @staticmethod
     def _verdict(rows: list[dict]) -> tuple[str, str]:
@@ -407,9 +442,22 @@ class ConnectionsDialog(QDialog):
             scroll.setWidget(hostw)
             lay.addWidget(scroll, 1)
 
+        btn_row = QHBoxLayout()
+        copy = QPushButton("Копировать")
+        copy.setToolTip("Скопировать список соединений в буфер обмена.")
+        copy.clicked.connect(lambda: _copy_to_clipboard(self._as_text(rows)))
+        btn_row.addWidget(copy)
+        btn_row.addStretch()
         close = QPushButton("Закрыть")
         close.clicked.connect(self.accept)
-        lay.addWidget(close)
+        btn_row.addWidget(close)
+        lay.addLayout(btn_row)
+
+    @staticmethod
+    def _as_text(rows: list[dict]) -> str:
+        lines = [f"{r['name']} (PID {r['pid']})  {r['local']} → {r['remote']}"
+                 for r in rows]
+        return "Активные соединения:\n" + ("\n".join(lines) or "(нет)")
 
     def _row(self, r: dict) -> QFrame:
         card = QFrame()
@@ -493,6 +541,13 @@ class SettingsDialog(QDialog):
                                       "мониторинга.")
         lay.addWidget(self.spin_interval)
 
+        self.chk_updates = QCheckBox("Тихо проверять обновления при запуске")
+        self.chk_updates.setChecked(bool(settings.get("check_updates")))
+        self.chk_updates.setToolTip("Раз в сутки проверять новую версию на "
+                                    "GitHub в фоне и сообщать в журнал только "
+                                    "если обновление доступно.")
+        lay.addWidget(self.chk_updates)
+
         lay.addStretch()
         row = QHBoxLayout()
         row.addStretch()
@@ -513,6 +568,7 @@ class SettingsDialog(QDialog):
         if host:
             settings.set("ping_host", host)
         settings.set("monitor_interval", int(self.spin_interval.value()))
+        settings.set("check_updates", bool(self.chk_updates.isChecked()))
         # тема/акцент — на лету (обновит настройки и перерисует окно-подписчик)
         theme.set_appearance(name=self.combo_theme.currentData(),
                              accent=self.combo_accent.currentData())
@@ -529,3 +585,159 @@ def _banner(lay: QVBoxLayout, status: str, text: str) -> None:
         f"background:{theme._rgba(c, 0.10)}; border:1px solid {theme._rgba(c, 0.33)}; "
         f"border-radius:12px; padding:12px 14px; color:{c}; font-weight:600;")
     lay.addWidget(banner)
+
+
+class DnsBenchDialog(QDialog):
+    """Результаты замера задержки публичных DNS-резолверов."""
+
+    def __init__(self, parent, rows: list[dict]):
+        super().__init__(parent)
+        self.setWindowTitle("Тест DNS-серверов")
+        self.setStyleSheet(theme.STYLE)
+        self.resize(460, 400)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 16, 16, 16)
+        lay.setSpacing(10)
+
+        alive = [r for r in rows if r["ms"] >= 0]
+        if alive:
+            best = alive[0]
+            _banner(lay, OK, f"Самый быстрый: {best['label']} "
+                             f"({best['server']}) — {best['ms']} мс. Задать его "
+                             f"можно кнопкой «Переключить DNS».")
+        else:
+            _banner(lay, WARN, "Ни один резолвер не ответил — проверь связь.")
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        host = QWidget()
+        col = QVBoxLayout(host)
+        col.setSpacing(6)
+        col.setContentsMargins(0, 0, 0, 0)
+        for r in rows:
+            col.addWidget(self._row(r))
+        col.addStretch()
+        scroll.setWidget(host)
+        lay.addWidget(scroll, 1)
+
+        btn_row = QHBoxLayout()
+        copy = QPushButton("Копировать")
+        copy.clicked.connect(lambda: _copy_to_clipboard(self._as_text(rows)))
+        btn_row.addWidget(copy)
+        btn_row.addStretch()
+        close = QPushButton("Закрыть")
+        close.clicked.connect(self.accept)
+        btn_row.addWidget(close)
+        lay.addLayout(btn_row)
+
+    def _row(self, r: dict) -> QFrame:
+        card = QFrame()
+        card.setObjectName("card")
+        h = QHBoxLayout(card)
+        h.setContentsMargins(12, 9, 12, 9)
+        left = QLabel(f"<b>{r['label']}</b>  "
+                      f"<span style='color:{theme.C_FAINT}'>{r['server']}</span>")
+        left.setTextFormat(Qt.TextFormat.RichText)
+        h.addWidget(left, 1)
+        if r["ms"] >= 0:
+            val = QLabel(f"{r['ms']} мс")
+            val.setStyleSheet(f"color:{theme.CLR_OK}; font-weight:600;")
+        else:
+            val = QLabel("нет ответа")
+            val.setStyleSheet(f"color:{theme.CLR_BAD}; font-weight:600;")
+        h.addWidget(val)
+        return card
+
+    @staticmethod
+    def _as_text(rows: list[dict]) -> str:
+        lines = [f"{r['label']} ({r['server']}): "
+                 f"{r['ms']} мс" if r["ms"] >= 0
+                 else f"{r['label']} ({r['server']}): нет ответа" for r in rows]
+        return "Тест DNS-серверов:\n" + "\n".join(lines)
+
+
+class FirewallRestoreDialog(QDialog):
+    """Выбор сохранённого бэкапа брандмауэра для восстановления."""
+
+    def __init__(self, parent, backups: list):
+        super().__init__(parent)
+        self.setWindowTitle("Восстановить брандмауэр из бэкапа")
+        self.setStyleSheet(theme.STYLE)
+        self.resize(560, 200)
+        self.result_value = None  # выбранный путь (str) или None
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 16, 16, 16)
+        lay.setSpacing(10)
+        lay.addWidget(QLabel("Бэкап правил брандмауэра (новые — вверху):"))
+        self.combo = QComboBox()
+        for pth in backups:
+            self.combo.addItem(pth.name, str(pth))
+        lay.addWidget(self.combo)
+
+        note = QLabel("Восстановление заменит текущие правила брандмауэра "
+                      "содержимым выбранного бэкапа. Требуются права "
+                      "администратора.")
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color:{theme.C_FAINT}; font-size:11px;")
+        lay.addWidget(note)
+
+        lay.addStretch()
+        row = QHBoxLayout()
+        row.addStretch()
+        cancel = QPushButton("Отмена")
+        cancel.clicked.connect(self.reject)
+        ok = QPushButton("Восстановить")
+        ok.setObjectName("primary")
+        ok.clicked.connect(self._pick)
+        row.addWidget(cancel)
+        row.addWidget(ok)
+        lay.addLayout(row)
+
+    def _pick(self) -> None:
+        self.result_value = self.combo.currentData()
+        self.accept()
+
+
+class AboutDialog(QDialog):
+    """О программе: версия, права, ссылки, папка логов."""
+
+    def __init__(self, parent, repo: str = ""):
+        super().__init__(parent)
+        self.setWindowTitle("О программе")
+        self.setStyleSheet(theme.STYLE)
+        self.resize(440, 300)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(18, 18, 18, 18)
+        lay.setSpacing(8)
+
+        title = QLabel(f"NetworkDoctor <b>{__version__}</b>")
+        title.setTextFormat(Qt.TextFormat.RichText)
+        title.setStyleSheet(f"color:{theme.C_TITLE}; font-size:18px;")
+        lay.addWidget(title)
+
+        sub = QLabel("Чинит интернет после застрявшего прокси и остатков "
+                     "VPN-туннелей на Windows.")
+        sub.setWordWrap(True)
+        sub.setStyleSheet(f"color:{theme.C_MUTED};")
+        lay.addWidget(sub)
+
+        lay.addWidget(theme.hline())
+        _kv_row(lay, "Права администратора", "да" if is_admin() else "нет")
+        _kv_row(lay, "Папка логов", str(LOG_DIR))
+        if repo:
+            link = f"https://github.com/{repo}"
+            row = QLabel(f"<span style='color:{theme.C_FAINT}'>GitHub:</span>  "
+                         f"<a href='{link}' style='color:{theme.CLR_ACCENT}'>"
+                         f"{repo}</a>")
+            row.setTextFormat(Qt.TextFormat.RichText)
+            row.setOpenExternalLinks(True)
+            row.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextBrowserInteraction)
+            lay.addWidget(row)
+
+        lay.addStretch()
+        close = QPushButton("Закрыть")
+        close.setObjectName("primary")
+        close.clicked.connect(self.accept)
+        lay.addWidget(close)

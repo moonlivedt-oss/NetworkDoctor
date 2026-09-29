@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "networkdoctor"
-version = "2.5"
+version = "2.6"
 description = "Сетевой доктор для Windows: чинит интернет после застрявшего прокси и остатков VPN-туннелей."
 readme = "README.md"
 requires-python = ">=3.10"

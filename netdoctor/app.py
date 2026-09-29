@@ -10,9 +10,9 @@ import sys
 from pathlib import Path
 
 from PyQt6.QtCore import (
-    Qt, QSize, QTimer, QPropertyAnimation, QEasingCurve,
+    Qt, QSize, QTimer, QPropertyAnimation, QEasingCurve, QByteArray,
 )
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QApplication, QFileDialog, QFrame, QGraphicsOpacityEffect, QGridLayout,
     QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMenu, QMessageBox,
@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import (
 
 from .core import OK, WARN, BAD, is_admin, relaunch_as_admin
 from . import settings
-from .updates import check_update
+from .updates import check_update, due_for_auto_check
 from .logs import (
     setup_logging, install_excepthook, record_state, build_report,
     LOG_DIR, logger,
@@ -33,14 +33,16 @@ from .net.fixes import (
     fix_firewall_reset, fix_stale_routes, fix_mtu_reset, fix_restart_dnscache,
     create_restore_point, fix_firewall_backup, backup_network_state,
     fix_flush_arp, fix_clean_hosts, fix_disable_wpad,
+    list_firewall_backups, restore_firewall,
 )
 from .net.tools import (
     list_proxy_processes, list_adapters, default_adapter, restart_adapter,
     set_dns, get_exit_info, ping_stats, country_name,
     download_speed, ipv6_enabled, set_ipv6,
     list_dns_servers, list_connections, adapter_details, probe_optimal_mtu,
-    apply_mtu, valid_host,
+    apply_mtu, valid_host, benchmark_dns,
 )
+from .net.diagnostics import recommend_action
 from .ui import theme
 from .ui.theme import make_app_icon, hline, Spinner
 from .ui.flow import FlowLayout
@@ -50,6 +52,7 @@ from .workers import (
 from .ui.dialogs import (
     ResultCard, ProxyProcessDialog, DnsDialog, HistoryDialog,
     AdapterDetailsDialog, DnsInfoDialog, ConnectionsDialog, SettingsDialog,
+    DnsBenchDialog, FirewallRestoreDialog, AboutDialog,
 )
 from .autostart import (
     is_autostart_enabled, enable_autostart, disable_autostart,
@@ -237,6 +240,25 @@ class NetworkDoctor(QMainWindow):
         actions.addWidget(self.btn_smart, 1)
         root.addLayout(actions)
 
+        # Плашка рекомендации: после диагностики предлагает ОДНО лучшее действие
+        # одной кнопкой. Скрыта, пока диагностика не нашла подходящую проблему.
+        self._rec_key = None
+        self.rec_frame = QFrame()
+        self.rec_frame.setObjectName("panel")
+        rec_l = QHBoxLayout(self.rec_frame)
+        rec_l.setContentsMargins(14, 10, 14, 10)
+        rec_l.setSpacing(12)
+        self.rec_label = QLabel()
+        self.rec_label.setWordWrap(True)
+        self.rec_label.setStyleSheet(f"color:{theme.C_TEXT};")
+        rec_l.addWidget(self.rec_label, 1)
+        self.rec_btn = QPushButton()
+        self.rec_btn.setObjectName("primary")
+        self.rec_btn.clicked.connect(self._do_recommended)
+        rec_l.addWidget(self.rec_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.rec_frame.hide()
+        root.addWidget(self.rec_frame)
+
         # Область результатов (в общей прокрутке страницы)
         self.results_host = QWidget()
         self.results_lay = QVBoxLayout(self.results_host)
@@ -319,12 +341,17 @@ class NetworkDoctor(QMainWindow):
         self.btn_mtu.setToolTip("Найти оптимальный MTU (DF-пинг) и предложить "
                                 "установить его. Установка требует админа.")
         self.btn_mtu.clicked.connect(self.on_probe_mtu)
+        self.btn_dnsbench = QPushButton("Тест DNS-серверов")
+        self.btn_dnsbench.setToolTip("Замерить задержку публичных DNS-резолверов "
+                                     "(Cloudflare, Google, Quad9…) и подсказать "
+                                     "самый быстрый.")
+        self.btn_dnsbench.clicked.connect(self.on_dns_bench)
 
         # список кнопок-инструментов, чтобы блокировать во время работы
         self._tool_btns = [self.btn_procs, self.btn_adapter, self.btn_dns,
                            self.btn_ipinfo, self.btn_ipv6, self.btn_dnsinfo,
                            self.btn_conns, self.btn_adapter_info,
-                           self.btn_ping, self.btn_mtu]
+                           self.btn_ping, self.btn_mtu, self.btn_dnsbench]
         # кнопки починки — блокируем на время диагностики (иначе починка и
         # фоновая до-загрузка «остатков VPN» подерутся за один воркер)
         self._fix_btns = [self.btn_quick, self.btn_ip, self.btn_deep,
@@ -358,6 +385,10 @@ class NetworkDoctor(QMainWindow):
              self.on_history),
             ("Папка логов", "Открыть папку с файлами логов и историей.",
              self.on_open_logs),
+            ("Откат файрвола", "Восстановить брандмауэр из сохранённого бэкапа "
+             "(откат «Убрать остатки VPN»).", self.on_restore_firewall),
+            ("О программе", "Версия, права, ссылка на репозиторий.",
+             self.on_about),
         ):
             b = QPushButton(text)
             b.setObjectName("link")
@@ -377,6 +408,38 @@ class NetworkDoctor(QMainWindow):
         root.addWidget(self.log)
 
         theme.subscribe(self.restyle)  # перерисовать окно при смене темы
+        self._install_shortcuts()
+        self._restore_geometry()
+
+    # -- геометрия и горячие клавиши ---------------------------------------
+    def _restore_geometry(self) -> None:
+        """Восстановить размер/позицию окна из настроек (hex saveGeometry)."""
+        raw = settings.get("win_geometry") or ""
+        if not raw:
+            return
+        try:
+            self.restoreGeometry(QByteArray.fromHex(raw.encode("ascii")))
+        except Exception:
+            pass
+
+    def _save_geometry(self) -> None:
+        """Сохранить текущую геометрию окна в настройки."""
+        try:
+            hexed = bytes(self.saveGeometry().toHex()).decode("ascii")
+            settings.set("win_geometry", hexed)
+        except Exception:
+            pass
+
+    def _install_shortcuts(self) -> None:
+        """Горячие клавиши: F5 — проверить, Ctrl+R — починить умно, F1 — о прог."""
+        for keys, slot in (
+            ("F5", self.on_diagnose),
+            ("Ctrl+R", self.on_smart_fix),
+            ("Ctrl+U", self.on_check_update),
+            ("F1", self.on_about),
+        ):
+            sc = QShortcut(QKeySequence(keys), self)
+            sc.activated.connect(slot)
 
     # -- построение секций -------------------------------------------------
     def _panel(self, title: str, root: QVBoxLayout) -> QVBoxLayout:
@@ -436,6 +499,7 @@ class NetworkDoctor(QMainWindow):
         self.btn_theme.setFixedSize(30, 30)
         self.btn_theme.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_theme.setToolTip("Переключить тёмную/светлую тему")
+        self.btn_theme.setAccessibleName("Переключить тему оформления")
         self.btn_theme.clicked.connect(self._toggle_theme)
         box.addWidget(self.btn_theme, 0, Qt.AlignmentFlag.AlignVCenter)
         box.addSpacing(4)
@@ -446,7 +510,9 @@ class NetworkDoctor(QMainWindow):
             b.setObjectName("swatch")
             b.setFixedSize(22, 22)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
-            b.setToolTip("Акцент: " + theme.ACCENT_LABELS.get(name, name).lower())
+            label = theme.ACCENT_LABELS.get(name, name)
+            b.setToolTip("Акцент: " + label.lower())
+            b.setAccessibleName("Акцентный цвет: " + label)
             b.clicked.connect(lambda _, n=name: self._set_accent(n))
             self._swatches[name] = b
             box.addWidget(b, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -487,6 +553,12 @@ class NetworkDoctor(QMainWindow):
             self._show_results(self._last_items)
         else:
             self._placeholder(self._placeholder_text or "")
+        if self.rec_frame.isVisible():  # обновить акцент плашки рекомендации
+            c = theme.CLR_ACCENT
+            self.rec_frame.setStyleSheet(
+                f"QFrame#panel{{background:{theme._rgba(c, 0.10)}; "
+                f"border:1px solid {theme._rgba(c, 0.40)}; border-radius:12px;}}")
+            self.rec_label.setStyleSheet(f"color:{theme.C_TEXT};")
         icon = make_app_icon()
         self._logo.setPixmap(icon.pixmap(QSize(38, 38)))  # логотип в тон акценту
         self.setWindowIcon(icon)
@@ -616,6 +688,37 @@ class NetworkDoctor(QMainWindow):
         except Exception as e:
             self.log_line(f"  ✗ Не удалось открыть папку логов: {e}")
 
+    def on_about(self) -> None:
+        AboutDialog(self, repo=(settings.get("github_repo") or "").strip()).exec()
+
+    def on_restore_firewall(self) -> None:
+        backups = list_firewall_backups()
+        if not backups:
+            QMessageBox.information(
+                self, "Откат файрвола",
+                "Бэкапов брандмауэра пока нет. Они создаются автоматически "
+                "перед сбросом в «Убрать остатки VPN».")
+            return
+        if not self._need_admin():
+            return
+        dlg = FirewallRestoreDialog(self, backups)
+        if not (dlg.exec() and dlg.result_value):
+            return
+        path = dlg.result_value
+        self.log_line(f"▶ Восстанавливаю брандмауэр из бэкапа: {path}…")
+        self._run_task(lambda: restore_firewall(path), self._restore_fw_done)
+
+    def _restore_fw_done(self, res) -> None:
+        if isinstance(res, Exception):
+            self.log_line(f"  ✗ Ошибка: {res}")
+            return
+        ok, msg = res
+        if ok:
+            self.log_line("  ✓ Правила брандмауэра восстановлены из бэкапа.")
+            record_state("fix", action="Восстановлен брандмауэр из бэкапа")
+        else:
+            self.log_line(f"  ✗ Не удалось: {msg or 'нужен админ?'}")
+
     # -- результаты --------------------------------------------------------
     def _clear_results(self) -> None:
         while self.results_lay.count():
@@ -703,10 +806,35 @@ class NetworkDoctor(QMainWindow):
                           "(например, задан прокси).")
         return OK, "Интернет работает нормально."
 
+    # -- рекомендация действия --------------------------------------------
+    def _show_recommendation(self, rec: dict | None) -> None:
+        """Показать/скрыть плашку с рекомендованным одним действием."""
+        if not rec:
+            self._rec_key = None
+            self.rec_frame.hide()
+            return
+        self._rec_key = rec["key"]
+        self.rec_label.setText("Рекомендуем: " + rec["reason"])
+        self.rec_btn.setText(rec["label"])
+        c = theme.CLR_ACCENT
+        self.rec_frame.setStyleSheet(
+            f"QFrame#panel{{background:{theme._rgba(c, 0.10)}; "
+            f"border:1px solid {theme._rgba(c, 0.40)}; border-radius:12px;}}")
+        self.rec_frame.show()
+
+    def _do_recommended(self) -> None:
+        """Выполнить рекомендованное действие (диспетчер по ключу)."""
+        handlers = {"smart": self.on_smart_fix, "ip": self.on_ip_fix,
+                    "vpn": self.on_fix_vpn_remnants, "quick": self.on_quick_fix}
+        fn = handlers.get(self._rec_key)
+        if fn:
+            fn()
+
     # -- диагностика -------------------------------------------------------
     def on_diagnose(self) -> None:
         if getattr(self, "_diag_busy", False):
             return
+        self._show_recommendation(None)  # старая рекомендация больше не актуальна
         self._diag_busy = True
         self.btn_diag.setEnabled(False)
         self.btn_smart.setEnabled(False)
@@ -742,6 +870,7 @@ class NetworkDoctor(QMainWindow):
         self.set_health(kind, msg)
         bad = sum(1 for i in self._last_items if i["status"] in (BAD, WARN))
         self.log_line(f"✔ Диагностика завершена. Замечаний: {bad}.")
+        self._show_recommendation(recommend_action(self._last_items))
         record_state("diagnosis", summary=kind,
                      items=[{"title": i["title"], "status": i["status"]}
                             for i in self._last_items])
@@ -889,6 +1018,34 @@ class NetworkDoctor(QMainWindow):
 
         self._tworker.done.connect(_wrap)
         self._track(self._tworker).start()
+
+    def _run_bg(self, fn, on_done) -> None:
+        """Фоновая задача без блокировки кнопок (для тихих проверок)."""
+        worker = TaskWorker(fn)
+        worker.done.connect(on_done)
+        self._track(worker).start()
+
+    # -- тихая авто-проверка обновлений ------------------------------------
+    def _maybe_check_updates(self) -> None:
+        """Раз в сутки в фоне проверить обновление; сообщить только если есть."""
+        if not settings.get("check_updates"):
+            return
+        today = datetime.date.today().isoformat()
+        if not due_for_auto_check(settings.get("last_update_check") or "", today):
+            return
+        settings.set("last_update_check", today)  # отметить сразу — не спамить
+        self._run_bg(check_update, self._auto_update_done)
+
+    def _auto_update_done(self, res) -> None:
+        if isinstance(res, Exception) or not isinstance(res, dict):
+            return
+        if res.get("status") == "update":
+            latest = res.get("latest", "")
+            cur = res.get("current", "")
+            self.log_line(f"▶ Доступно обновление: {latest} (у тебя {cur}). "
+                          f"Проверить: «Обновления».")
+            self._notify("Доступно обновление",
+                         f"NetworkDoctor {latest} доступен (у тебя {cur}).")
 
     def _need_admin(self) -> bool:
         if is_admin():
@@ -1214,6 +1371,26 @@ class NetworkDoctor(QMainWindow):
         else:
             self.log_line(f"  ✗ Не удалось: {msg or 'нужен админ?'}")
 
+    # --- тест скорости DNS-серверов ---
+    def on_dns_bench(self) -> None:
+        self.log_line("▶ Замеряю задержку DNS-резолверов…")
+        self._run_task(lambda: benchmark_dns(), self._show_dns_bench)
+
+    def _show_dns_bench(self, res) -> None:
+        if isinstance(res, Exception):
+            self.log_line(f"  ✗ Ошибка: {res}")
+            return
+        alive = [r for r in res if r["ms"] >= 0]
+        if alive:
+            best = alive[0]
+            self.log_line(f"  Быстрейший DNS: {best['label']} "
+                          f"({best['server']}) — {best['ms']} мс.")
+            record_state("tool", info=f"Тест DNS: быстрейший {best['label']} "
+                         f"{best['server']} {best['ms']} мс")
+        else:
+            self.log_line("  ✗ Ни один DNS-резолвер не ответил.")
+        DnsBenchDialog(self, res).exec()
+
     # -- «Починить умно» ---------------------------------------------------
     def on_smart_fix(self) -> None:
         ans = QMessageBox.question(
@@ -1405,11 +1582,13 @@ class NetworkDoctor(QMainWindow):
         if not self._auto_done:
             self._auto_done = True
             QTimer.singleShot(350, self.on_diagnose)  # автодиагностика
+            QTimer.singleShot(2500, self._maybe_check_updates)  # тихо, позже
 
     def start_in_tray(self) -> None:
         """Запуск свёрнутым в трей: включить мониторинг, окно не показывать."""
         self._auto_done = True  # без всплывающей автодиагностики
         self.btn_monitor.setChecked(True)  # включит мониторинг и создаст трей
+        QTimer.singleShot(3000, self._maybe_check_updates)  # тихая авто-проверка
         if self._tray is not None:
             self._tray.showMessage(
                 "NetworkDoctor работает в трее",
@@ -1417,6 +1596,8 @@ class NetworkDoctor(QMainWindow):
                 QSystemTrayIcon.MessageIcon.Information, 4000)
 
     def closeEvent(self, event) -> None:
+        if self.isVisible():
+            self._save_geometry()  # запомнить размер/позицию для след. запуска
         # Если есть трей и это не настоящий выход — сворачиваемся в трей.
         if self._tray is not None and not self._force_quit:
             event.ignore()

@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import re
+import socket
+import struct
 import time
 import urllib.request
 
@@ -295,6 +297,88 @@ def list_dns_servers() -> list[dict]:
         srv = [s.strip() for s in servers.split(",") if s.strip()]
         if iface.strip() and srv:
             rows.append({"iface": iface.strip(), "servers": srv})
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# Бенчмарк DNS-резолверов (сырой UDP-запрос — не зависит от системных настроек)
+# ---------------------------------------------------------------------------
+#
+# Меряем время ответа на A-запрос от нескольких публичных резолверов, чтобы
+# подсказать самый быстрый. Собственный минимальный DNS-пакет (UDP/53) — так
+# замер не зависит от текущего системного DNS и не требует PowerShell.
+
+# Резолверы для замера: (адрес, читаемое имя).
+DNS_BENCH_SERVERS = (
+    ("1.1.1.1", "Cloudflare"),
+    ("8.8.8.8", "Google"),
+    ("9.9.9.9", "Quad9"),
+    ("208.67.222.222", "OpenDNS"),
+    ("77.88.8.8", "Яндекс"),
+)
+
+
+def _encode_dns_name(name: str) -> bytes:
+    """Имя хоста → последовательность DNS-меток (len+байты), терминатор 0."""
+    out = bytearray()
+    for label in name.rstrip(".").split("."):
+        b = label.encode("idna") if label else b""
+        out.append(len(b))
+        out.extend(b)
+    out.append(0)
+    return bytes(out)
+
+
+def _build_dns_query(name: str, txid: int) -> bytes:
+    """Минимальный DNS-запрос типа A (IN) с рекурсией. txid — идентификатор."""
+    header = struct.pack(">HHHHHH", txid & 0xFFFF, 0x0100, 1, 0, 0, 0)
+    question = _encode_dns_name(name) + struct.pack(">HH", 1, 1)  # QTYPE=A QCLASS=IN
+    return header + question
+
+
+def _parse_dns_header(resp: bytes) -> dict:
+    """Разобрать заголовок DNS-ответа: {id, qr, rcode, ancount}."""
+    if len(resp) < 12:
+        return {"id": -1, "qr": 0, "rcode": -1, "ancount": 0}
+    txid, flags, qd, an, ns, ar = struct.unpack(">HHHHHH", resp[:12])
+    return {"id": txid, "qr": (flags >> 15) & 1,
+            "rcode": flags & 0x0F, "ancount": an}
+
+
+def _dns_response_ok(resp: bytes, txid: int) -> bool:
+    """Ответ валиден: это ответ (QR=1) на наш запрос (совпал id), без ошибки."""
+    h = _parse_dns_header(resp)
+    return h["id"] == (txid & 0xFFFF) and h["qr"] == 1 and h["rcode"] == 0
+
+
+def dns_latency(server: str, name: str = "example.com",
+                timeout: float = 2.0) -> float:
+    """Задержка ответа резолвера `server` на A-запрос `name`, мс (-1 при сбое)."""
+    txid = int(time.time() * 1000) & 0xFFFF
+    query = _build_dns_query(name, txid)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.settimeout(timeout)
+    try:
+        t0 = time.perf_counter()
+        sock.sendto(query, (server, 53))
+        while True:
+            resp, _ = sock.recvfrom(2048)
+            if _dns_response_ok(resp, txid):
+                return round((time.perf_counter() - t0) * 1000, 1)
+    except Exception:
+        return -1
+    finally:
+        sock.close()
+
+
+def benchmark_dns(name: str = "example.com", timeout: float = 2.0) -> list[dict]:
+    """Замерить задержку публичных резолверов. Возвращает [{server, label, ms}],
+    отсортировано по возрастанию задержки (недоступные, ms=-1, — в конце)."""
+    rows = []
+    for server, label in DNS_BENCH_SERVERS:
+        ms = dns_latency(server, name, timeout)
+        rows.append({"server": server, "label": label, "ms": ms})
+    rows.sort(key=lambda r: (r["ms"] < 0, r["ms"] if r["ms"] >= 0 else 0))
     return rows
 
 

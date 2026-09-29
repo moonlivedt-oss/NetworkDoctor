@@ -335,6 +335,35 @@ def fix_firewall_backup(log) -> None:
             "— продолжаю.")
 
 
+def list_firewall_backups() -> list:
+    """Сохранённые бэкапы правил брандмауэра (.wfw), новые — первыми.
+
+    Возвращает список Path. Пустой список, если бэкапов нет или папка
+    недоступна. Нужен, чтобы предложить откат после «Убрать остатки VPN».
+    """
+    try:
+        d = LOG_DIR / "backups"
+        files = sorted(d.glob("firewall_*.wfw"),
+                       key=lambda p: p.stat().st_mtime, reverse=True)
+        return files
+    except Exception:
+        return []
+
+
+def restore_firewall(path) -> tuple[bool, str]:
+    """Восстановить правила брандмауэра из бэкапа .wfw. Требует админа.
+
+    Откат сброса, сделанного «Убрать остатки VPN». Возвращает (успех, текст).
+    """
+    from pathlib import Path
+    p = Path(path)
+    if not p.exists():
+        return False, "Файл бэкапа не найден."
+    code, out = run_cmd(["netsh", "advfirewall", "import", str(p)])
+    ok = code == 0 or "ok" in out.lower() or "успеш" in out.lower()
+    return ok, out.strip()
+
+
 def backup_network_state(log) -> None:
     """Сохранить снимок сетевых настроек перед глубоким сбросом (для справки).
 

@@ -23,36 +23,56 @@ _ADAPTERS_TITLE = "Виртуальные адаптеры (VPN/туннели)"
 _CONCLUSION = "⟹ Вывод"
 
 
-def check_wininet_proxy() -> dict:
-    """Проверить системный прокси Windows (WinINET) — главный виновник."""
-    try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, INET_SETTINGS) as k:
-            try:
-                enable = winreg.QueryValueEx(k, "ProxyEnable")[0]
-            except FileNotFoundError:
-                enable = 0
-            try:
-                server = winreg.QueryValueEx(k, "ProxyServer")[0]
-            except FileNotFoundError:
-                server = ""
-            try:
-                autocfg = winreg.QueryValueEx(k, "AutoConfigURL")[0]
-            except FileNotFoundError:
-                autocfg = ""
-    except FileNotFoundError:
-        return {"status": OK, "title": _WININET_TITLE,
-                "detail": "Не настроен (прямое подключение)."}
+def _read_wininet(hive) -> tuple[int, str, str]:
+    """Прочитать (ProxyEnable, ProxyServer, AutoConfigURL) из ветки hive.
 
+    Отсутствие ключа/значений трактуем как «прокси не задан» (0, '', '')."""
+    try:
+        with winreg.OpenKey(hive, INET_SETTINGS) as k:
+            def val(name, default):
+                try:
+                    return winreg.QueryValueEx(k, name)[0]
+                except FileNotFoundError:
+                    return default
+            return val("ProxyEnable", 0), val("ProxyServer", ""), \
+                val("AutoConfigURL", "")
+    except FileNotFoundError:
+        return 0, "", ""
+
+
+def _classify_wininet(enable, server: str, autocfg: str,
+                      machine_server: str = "") -> dict:
+    """Собрать карточку по значениям прокси (чистая логика — тестируется).
+
+    machine_server — ProxyServer из HKLM (прокси уровня всей машины, ставится
+    групповой политикой или другим ПО; пользователь его часто не видит)."""
     if enable and server:
         return {"status": WARN, "title": _WININET_TITLE,
                 "detail": f"ВКЛЮЧЁН: {server}\n"
                           f"Если прокси-клиент выключен, а это осталось — "
                           f"интернет не работает. Рекомендуется сброс."}
+    if machine_server:
+        return {"status": WARN, "title": _WININET_TITLE,
+                "detail": f"Задан прокси уровня системы (HKLM): "
+                          f"{machine_server}\nОн действует на всех "
+                          f"пользователей — обычно от политики или другого ПО. "
+                          f"Если это остаток — сбрось прокси."}
     if autocfg:
         return {"status": WARN, "title": _WININET_TITLE,
                 "detail": f"Автонастройка (PAC): {autocfg}"}
     return {"status": OK, "title": _WININET_TITLE,
             "detail": "Выключен (прямое подключение)."}
+
+
+def check_wininet_proxy() -> dict:
+    """Проверить системный прокси Windows (WinINET) — главный виновник.
+
+    Смотрим и пользователя (HKCU), и машину (HKLM): прокси уровня системы
+    (групповая политика, корпоративное/стороннее ПО) виден только в HKLM.
+    """
+    enable, server, autocfg = _read_wininet(winreg.HKEY_CURRENT_USER)
+    _, machine_server, _ = _read_wininet(winreg.HKEY_LOCAL_MACHINE)
+    return _classify_wininet(enable, server, autocfg, machine_server)
 
 
 def check_winhttp_proxy(state: dict) -> dict:
@@ -318,6 +338,66 @@ def check_connectivity(proxy_configured: bool,
         results.append({"status": OK, "title": _CONCLUSION,
                         "detail": "Интернет работает нормально."})
     return results
+
+
+# Заголовки-константы для сопоставления в рекомендациях.
+_T_TCP = "Прямое соединение (TCP)"
+_T_DNS = "DNS (разрешение имён)"
+_T_WINHTTP = "WinHTTP-прокси"
+_T_ENV = "Переменные окружения прокси"
+_T_MTU = "MTU активного адаптера"
+_T_HOSTS = "Файл hosts"
+_T_FIREWALL = "Файрвол: блок-правила (kill-switch)"
+_T_ROUTES = "Зависшие маршруты (мёртвые туннели)"
+
+
+def recommend_action(items: list[dict]) -> dict | None:
+    """По результатам диагностики выбрать ОДНО лучшее действие для пользователя.
+
+    Возвращает {key, label, reason} или None, если всё в порядке. key — код
+    кнопки-действия: 'smart' | 'ip' | 'vpn' | 'quick'. Порядок проверок — от
+    самой серьёзной проблемы к мягкой рекомендации; побеждает первая подходящая.
+    Чистая логика — тестируется без сети.
+    """
+    by_title = {i.get("title"): i for i in items}
+    warn = {i.get("title") for i in items if i.get("status") == WARN}
+
+    def status(title):
+        return by_title.get(title, {}).get("status")
+
+    # 1. Нет даже прямого TCP — проблема глубже прокси.
+    if status(_T_TCP) == BAD:
+        return {"key": "ip", "label": "Обновить IP",
+                "reason": "Нет связи даже напрямую. Начни с обновления IP; "
+                          "если не поможет — понадобится глубокий сброс сети."}
+    # 2. Застрявший системный прокси (вывод-подсказка «плохо»).
+    if status(_CONCLUSION) == BAD:
+        return {"key": "smart", "label": "Починить умно",
+                "reason": "Похоже на застрявший системный прокси — умная "
+                          "починка сбросит его и остановится, как только "
+                          "интернет вернётся."}
+    # 3. Остатки VPN: kill-switch, зависшие маршруты, заниженный MTU.
+    if warn & {_T_FIREWALL, _T_ROUTES, _T_MTU}:
+        return {"key": "vpn", "label": "Убрать остатки VPN",
+                "reason": "Найдены остатки VPN (блокировка брандмауэра, "
+                          "зависшие маршруты или заниженный MTU) — их уберёт "
+                          "«Убрать остатки VPN»."}
+    # 4. Не разрешаются имена — очистка DNS в составе умной починки.
+    if status(_T_DNS) == BAD:
+        return {"key": "smart", "label": "Починить умно",
+                "reason": "Не разрешаются имена сайтов — починка очистит кеш "
+                          "DNS и перезапустит службу."}
+    # 5. Задан прокси (мягко) — предложить быстрый сброс.
+    if warn & {_WININET_TITLE, _T_WINHTTP, _T_ENV}:
+        return {"key": "quick", "label": "Быстрая починка прокси",
+                "reason": "Задан системный прокси. Если прокси-клиентом сейчас "
+                          "не пользуешься — сбрось его быстрой починкой."}
+    # 6. Подозрительные записи в hosts.
+    if _T_HOSTS in warn:
+        return {"key": "vpn", "label": "Убрать остатки VPN",
+                "reason": "В файле hosts есть подозрительные перенаправления — "
+                          "«Убрать остатки VPN» вычистит их (с бэкапом)."}
+    return None
 
 
 def run_core_diagnosis() -> list[dict]:
