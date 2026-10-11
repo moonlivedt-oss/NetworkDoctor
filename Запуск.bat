@@ -1,6 +1,12 @@
 @echo off
-REM Обычный запуск NetworkDoctor (без прав администратора).
-REM Диагностика и быстрая починка прокси работают; глубокий сброс — нет.
+chcp 65001 >nul
+setlocal
+rem Обычный запуск NetworkDoctor (без прав администратора).
+rem Диагностика и быстрая починка прокси работают; глубокий сброс - нет.
 cd /d "%~dp0"
-REM PyQt6 стоит в Python 3.14 — целимся явно (pythonw из PATH = 3.11 без зависимостей).
-start "" pyw -3.14 "run.pyw"
+call "%~dp0_python.cmd" || exit /b 1
+if defined PYW (
+    start "" "%PYW%" "%~dp0run.pyw"
+) else (
+    start "" %PY% "%~dp0run.pyw"
+)

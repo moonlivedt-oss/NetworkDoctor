@@ -23,3 +23,32 @@ jobs:
           pip install -e ".[dev]"
       - name: Run tests
         run: pytest -q
+
+  build:
+    # На тег vX.Y собираем NetworkDoctor.exe и прикладываем к релизу:
+    # пользователю не нужен Python. Релиз создаёт автор (gh release create),
+    # workflow только добавляет файлы.
+    needs: pytest
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+      - name: Build exe
+        run: pyinstaller --noconfirm --clean --name NetworkDoctor --onefile --noconsole --hidden-import PyQt6.sip run.pyw
+      - name: SHA256 checksum
+        run: (Get-FileHash dist/NetworkDoctor.exe -Algorithm SHA256).Hash | Out-File -Encoding ascii dist/NetworkDoctor.exe.sha256
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/NetworkDoctor.exe
+            dist/NetworkDoctor.exe.sha256

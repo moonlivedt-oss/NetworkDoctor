@@ -22,7 +22,7 @@ DEFAULTS = {
     "autofix": False,          # авто-починка при обрыве
     "ping_host": "1.1.1.1",    # хост по умолчанию для «Пинг хоста»
     "monitor_interval": 20,    # период проверки связи мониторингом, сек
-    "github_repo": "moonlivedt-oss/MoonMinder",  # 'owner/name' для проверки обновлений
+    "github_repo": "moonlivedt-oss/NetworkDoctor",  # 'owner/name' для проверки обновлений
     "check_updates": True,     # тихо проверять обновления при запуске (раз в сутки)
     "last_update_check": "",   # дата последней авто-проверки (YYYY-MM-DD)
     "win_geometry": "",        # сохранённая геометрия окна (hex saveGeometry)

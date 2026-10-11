@@ -189,19 +189,22 @@
 
 ## Запуск
 
-Требуется Windows и Python 3.10+ с установленным PyQt6.
+**Проще всего** - скачать `NetworkDoctor.exe` со страницы
+[Releases](https://github.com/moonlivedt-oss/NetworkDoctor/releases/latest): Python не нужен,
+файл собирает GitHub Actions, рядом лежит `NetworkDoctor.exe.sha256` для проверки.
+
+**Из исходников** (Windows): скачайте репозиторий и дважды щёлкните батник - он настроит всё сам.
+
+- **`Запуск.bat`** - обычный запуск. Диагностика и быстрая починка прокси работают.
+- **`Запуск (админ).bat`** - с правами администратора (запросит UAC). Нужен для «глубокого сброса
+  сети» и чистки остатков VPN.
+
+Оба батника через `_python.cmd` находят Python 3.10+ (сначала тот, где уже стоит PyQt6), при
+первом запуске сами ставят PyQt6 из `requirements.txt` и запускают `run.pyw` без окна консоли.
+Вручную:
 
 ```bash
 pip install -r requirements.txt
-```
-
-- **`Запуск.bat`** — обычный запуск. Диагностика и быстрая починка прокси работают.
-- **`Запуск (админ).bat`** — с правами администратора (запросит UAC). Нужен для «глубокого сброса
-  сети» и чистки остатков VPN.
-
-Оба `.bat` запускают `run.pyw` (launcher пакета). Можно и напрямую:
-
-```bash
 python -m netdoctor      # из корня проекта
 pythonw run.pyw          # без окна консоли
 ```
@@ -264,6 +267,7 @@ pip install .
 | `net/hosts.py` | путь, разбор и оценка подозрительности записей файла hosts |
 | `ui/theme.py` | тёмная/светлая палитры, стили Qt, иконка, спиннер |
 | `ui/dialogs.py` | диалоговые окна |
+| `ui/flow.py` | раскладка с переносом для рядов тумблеров и ссылок |
 
 ```
 NetworkDoctor/
@@ -271,21 +275,22 @@ NetworkDoctor/
   Запуск.bat              ← обычный запуск
   Запуск (админ).bat      ← запуск с правами администратора (UAC)
   Собрать exe.bat         ← сборка одиночного .exe через PyInstaller
+  _python.cmd             ← общий поиск Python и установка PyQt6 для батников
   pyproject.toml          ← метаданные пакета, зависимости, точка входа
   requirements.txt        ← зависимости для быстрого старта
-  README.md · LICENSE · .gitignore
+  README.md, CHANGELOG.md, LICENSE, .gitignore
   netdoctor/              ← пакет приложения (PyQt6)
-    core.py · logs.py · settings.py · updates.py · autostart.py
-    workers.py · app.py
+    core.py, logs.py, settings.py, updates.py, autostart.py
+    workers.py, app.py
     net/                  ← сетевая логика без Qt
-      tools.py · diagnostics.py · fixes.py · hosts.py
+      tools.py, diagnostics.py, fixes.py, hosts.py
     ui/                   ← представление (Qt)
-      theme.py · dialogs.py
+      theme.py, dialogs.py, flow.py
   tests/
     test_pure.py          ← юнит-тесты чистой логики
     test_monitor.py       ← тесты MonitorWorker (троттлинг, клампинг)
   .github/workflows/
-    tests.yml             ← CI: прогон тестов на push/PR
+    tests.yml             ← CI: тесты на push/PR, сборка .exe на тег
   logs/                   ← создаётся автоматически: netdoctor.log,
                             network_state.jsonl, config.json, backups/
 ```
@@ -294,16 +299,20 @@ NetworkDoctor/
 
 ## Сборка в .exe
 
-Чтобы запускать без установленного Python:
+Двойной клик по **`Собрать exe.bat`**: он найдёт Python (как и запуск), поставит PyInstaller и
+соберёт `dist\NetworkDoctor.exe`. Вручную:
 
 ```bash
 pip install -r requirements.txt pyinstaller
+pyinstaller --onefile --noconsole --name NetworkDoctor --hidden-import PyQt6.sip run.pyw
 ```
 
-Затем запусти **`Собрать exe.bat`** (или вручную
-`pyinstaller --onefile --noconsole --name NetworkDoctor run.pyw`). Готовый файл появится в
-`dist\NetworkDoctor.exe`. Автозапуск умеет ссылаться на собранный `.exe` (а не на python-скрипт),
-если включён из `.exe`-сборки.
+Автозапуск умеет ссылаться на собранный `.exe` (а не на python-скрипт), если включён из
+`.exe`-сборки.
+
+**Релиз:** автор создаёт релиз с тегом `vX.Y` (`gh release create vX.Y`), workflow
+`tests.yml` по этому тегу прогоняет тесты, собирает `NetworkDoctor.exe` и прикладывает его к
+релизу вместе с контрольной суммой.
 
 ---
 
@@ -319,7 +328,7 @@ pytest -q
 ```
 
 Тесты также прогоняются в **CI** на каждый push/PR — см. `.github/workflows/tests.yml`
-(Windows-раннер, Python 3.11 и 3.12).
+(Windows-раннер, Python 3.11 и 3.12); на тег `v*` там же собирается `.exe` для релиза.
 
 ---
 
